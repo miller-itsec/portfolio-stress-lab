@@ -88,22 +88,18 @@ http://localhost:8501
 
 ---
 
-## 📊 Data Input
+## 📊 Data Input (Excel Only)
 
-The app supports:
-- CSV portfolio uploads
-- Manual editing of holdings directly in `app.py`
+The app requires a **Microsoft Excel (`.xlsx`)** file.
 
-### Supported CSV Format
-The CSV file must include at least the following columns:
+### Required Columns
+You can map columns in the **Sidebar**, but the defaults are:
 
-| Column | Description |
-|------|------------|
-| `Ticker` | Asset ticker (e.g., AAPL, MSFT) |
-| `Name` | Asset name |
-| `Weight` | Decimal weight (e.g., 0.05 = 5%) |
-| `Kind` | EQUITY \| CASH \| ALT |
+- **Name (Column A)**: The name of the holding (e.g., `"Apple Inc"` or `"Cash"`)
+- **Ticker (Column B)**: The symbol (e.g., `AAPL`, `MSFT`). Use Yahoo Finance format (e.g., `BMW.DE` for German stocks).
+- **Weight (Column AQ)**: The position size (e.g., `0.05` for 5% — the app may also accept locale formats like `5,0` depending on parsing settings).
 
+> **Note:** The app automatically detects **Cash** and **Alternatives** based on keywords in the **Name** column.
 ---
 
 ## 🧠 Logic & Methodology
