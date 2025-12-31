@@ -191,6 +191,133 @@ def get_col_series(df: pd.DataFrame, col_spec: str) -> pd.Series:
     matches = [c for c in df.columns if str(c).strip().lower() == col_spec.strip().lower()]
     return df[matches[0]] if matches else pd.Series()
 
+def fetch_current_prices_batch(tickers: List[str], target_currency="USD") -> Dict[str, float]:
+    """
+    Ultra-robust price fetcher with Currency Normalization.
+    1. Tries Fast Info -> History -> Info to get a price.
+    2. Detects currency (e.g. EUR).
+    3. Converts to 'target_currency' (default USD) using live FX rates.
+    """
+    if not tickers: return {}
+    price_map = {}
+    currency_map = {} # Ticker -> Currency string
+    
+    # Remove duplicates
+    unique_tkrs = list(set(tickers))
+    
+    # 1. BATCH FETCH DATA
+    try:
+        tickers_str = " ".join(unique_tkrs)
+        dat = yf.Tickers(tickers_str)
+        
+        # --- A. Get Raw Prices & Currencies ---
+        for t in unique_tkrs:
+            price = None
+            curr = None
+            ticker_obj = dat.tickers[t]
+            
+            # METHOD A: Fast Info (Most efficient)
+            try:
+                if hasattr(ticker_obj, "fast_info"):
+                    # Price
+                    price = getattr(ticker_obj.fast_info, "last_price", None)
+                    if price is None and "last_price" in ticker_obj.fast_info:
+                        price = ticker_obj.fast_info["last_price"]
+                    
+                    # Currency
+                    curr = getattr(ticker_obj.fast_info, "currency", None)
+                    if curr is None and "currency" in ticker_obj.fast_info:
+                        curr = ticker_obj.fast_info["currency"]
+            except: pass
+            
+            # METHOD B: 1-Day History (Definitive fallback)
+            if price is None:
+                try:
+                    hist = ticker_obj.history(period="1d")
+                    if not hist.empty:
+                        price = hist["Close"].iloc[-1]
+                        # History doesn't always give currency easily, fallback to Info
+                except: pass
+
+            # METHOD C: Standard Info (Slowest, last resort)
+            if price is None or curr is None:
+                try:
+                    info = ticker_obj.info
+                    if price is None:
+                        price = info.get("currentPrice") or info.get("regularMarketPreviousClose")
+                    if curr is None:
+                        curr = info.get("currency")
+                except: pass
+            
+            # Store found data
+            if price is not None and price > 0:
+                price_map[t] = price
+                currency_map[t] = curr.upper() if curr else "USD" # Default to USD if missing
+            else:
+                print(f"Failed to fetch price for: {t}")
+
+        # --- B. Normalize Currencies ---
+        # Identify what currencies we have that are NOT the target
+        needed_currencies = set(currency_map.values())
+        if target_currency in needed_currencies:
+            needed_currencies.remove(target_currency)
+        
+        # Fetch FX Rates (e.g. "EURUSD=X")
+        fx_rates = {}
+        if needed_currencies:
+            fx_tickers = [f"{c}{target_currency}=X" for c in needed_currencies]
+            try:
+                fx_dat = yf.Tickers(" ".join(fx_tickers))
+                for c in needed_currencies:
+                    fx_symbol = f"{c}{target_currency}=X"
+                    
+                    # Try getting rate
+                    rate = None
+                    fx_obj = fx_dat.tickers[fx_symbol]
+                    try:
+                        rate = getattr(fx_obj.fast_info, "last_price", None)
+                        if not rate: rate = fx_obj.info.get("regularMarketPrice")
+                    except: pass
+                    
+                    # Fallback for common ones if YF fails
+                    if not rate:
+                        if c == "EUR": rate = 1.08 # Safety fallback
+                        elif c == "GBP": rate = 1.25
+                    
+                    if rate:
+                        fx_rates[c] = rate
+            except: pass
+
+        # Apply Conversion
+        final_prices = {}
+        for t, raw_px in price_map.items():
+            c = currency_map.get(t, "USD")
+            
+            # Handle GBp (Pence) -> GBP -> USD
+            if c == "GBP":
+                # Some feeds denote pence as GBP with low price, or 'GBp'
+                # Logic: If price is massive (e.g. 1500), it's likely pence. 
+                # But safer to rely on exact string 'GBp' if provided, or assume standard GBP.
+                # Standard YF usually uses 'GBP' for pounds.
+                pass 
+            elif c == "GBp" or c == "GPB": # Typos or Pence
+                raw_px = raw_px / 100.0
+                c = "GBP"
+
+            if c == target_currency:
+                final_prices[t] = raw_px
+            elif c in fx_rates:
+                final_prices[t] = raw_px * fx_rates[c]
+            else:
+                # If we lack FX rate, return raw price but warn (or assuming 1:1)
+                final_prices[t] = raw_px 
+        
+        return final_prices
+
+    except Exception as e:
+        print(f"Batch fetch error: {e}")
+        return {}
+
 @st.cache_data(ttl=3600*24) # Cache names for 24 hours
 def fetch_ticker_names(tickers: List[str]) -> Dict[str, str]:
     """
@@ -327,7 +454,11 @@ def fetch_prices_for_tickers(tickers: List[str], start: str, end: Optional[str] 
     return px_data.dropna(how="all").ffill().dropna()
 
 def build_price_matrix(holdings: List[Holding], start: str, end: Optional[str]) -> Tuple[pd.DataFrame, Dict[str, str]]:
-    wanted = sorted({h.ticker for h in holdings if h.kind == "TICKER" and h.ticker})
+    # FIX: Accept both "TICKER" (from Excel) and "EQUITY" (from Manual Entry)
+    valid_kinds = ["TICKER", "EQUITY"]
+    
+    wanted = sorted({h.ticker for h in holdings if h.kind in valid_kinds and h.ticker})
+    
     if not wanted: return pd.DataFrame(), {}
     
     px_all = fetch_prices_for_tickers(wanted, start, end)
@@ -336,7 +467,8 @@ def build_price_matrix(holdings: List[Holding], start: str, end: Optional[str]) 
     price_df = pd.DataFrame(index=px_all.index)
     
     # Map back to holding names
-    holding_map = {h.name: h.ticker for h in holdings if h.kind == "TICKER" and h.ticker}
+    holding_map = {h.name: h.ticker for h in holdings if h.kind in valid_kinds and h.ticker}
+    
     for hname, t in holding_map.items():
         if t in px_all.columns:
             price_df[hname] = px_all[t]
@@ -816,56 +948,149 @@ st.title("📈 Portfolio Stress Lab")
 
 # --- SIDEBAR ---
 st.sidebar.header("📂 Data Import")
-uploaded_file = st.sidebar.file_uploader("Upload Excel Portfolio (.xlsx)", type=["xlsx"])
+input_method = st.sidebar.radio("Input Method:", ["Excel Upload", "Manual Entry (Qty)"])
 
-sheet_name = "Portfolio Jan"
-if uploaded_file:
-    try:
-        xl = pd.ExcelFile(uploaded_file)
-        sheet_name = st.sidebar.selectbox("Select Sheet", xl.sheet_names)
-        uploaded_file.seek(0)
-    except: pass
+# 1. ALWAYS Initialize holdings to empty first
+holdings = []
 
-col_map_expander = st.sidebar.expander("Column Mapping (Advanced)", expanded=False)
-with col_map_expander:
-    name_col = st.text_input("Name Column", "A")
-    ticker_col = st.text_input("Ticker Column", "B")
-    weight_col = st.text_input("Weight Column", "AQ")
+# 2. LOAD FROM STATE IMMEDIATELY (Persistence)
+if input_method == "Manual Entry (Qty)" and "manual_holdings" in st.session_state:
+    holdings = st.session_state["manual_holdings"]
 
-st.sidebar.header("⚙️ Simulation")
-start_date = st.sidebar.date_input("Start Date", value=pd.to_datetime("2019-01-01"))
+if input_method == "Excel Upload":
+    # Optional: Clear manual state to avoid confusion
+    if "manual_holdings" in st.session_state:
+        del st.session_state["manual_holdings"]
+        
+    uploaded_file = st.sidebar.file_uploader("Upload Portfolio (.xlsx)", type=["xlsx"])
+    sheet_name = "Portfolio"
+    
+    if uploaded_file:
+        try:
+            xl = pd.ExcelFile(uploaded_file)
+            sheet_name = st.sidebar.selectbox("Select Sheet", xl.sheet_names)
+            uploaded_file.seek(0)
+            
+            col_map_expander = st.sidebar.expander("Column Mapping", expanded=False)
+            with col_map_expander:
+                name_col = st.text_input("Name Column", "A")
+                ticker_col = st.text_input("Ticker Column", "B")
+                weight_col = st.text_input("Weight Column", "AQ")
+            
+            holdings = load_portfolio(uploaded_file, sheet_name, name_col, weight_col, ticker_col)
+            # For Excel, we don't know the total $ value, so we clear any legacy value
+            if "portfolio_total_value" in st.session_state:
+                del st.session_state["portfolio_total_value"]
+        except Exception as e:
+            st.sidebar.error(f"Error reading Excel: {e}")
 
-# UPDATED VaR SLIDER
-alpha_conf = st.sidebar.slider(
-    "VaR Significance Level (Alpha)", 
-    min_value=0.01, 
-    max_value=0.10, 
-    value=0.05,
-    step=0.01,
-    help="The tail probability for risk calculation. Lower alpha (0.01) = More extreme stress test (99% Confidence)."
-)
+elif input_method == "Manual Entry (Qty)":
+    st.sidebar.info("Enter your share counts. We'll fetch prices to calculate portfolio weights.")
+    
+    # Inputs
+    total_cash = st.sidebar.number_input("Total Cash Position ($)", min_value=0.0, value=10000.0, step=500.0)
+    
+    raw_holdings = st.sidebar.text_area(
+        "Holdings (Ticker, Quantity)", 
+        value="AAPL, 10\nMSFT, 5\nNVDA, 20",
+        help="Format: TICKER, SHARES (one per line). Example: \nAAPL, 10\nMSFT, 5"
+    )
+    
+    if st.sidebar.button("Build Portfolio"):
+        with st.spinner("Fetching data..."):
+            # A. PARSE INPUTS
+            lines = [line.strip() for line in raw_holdings.split('\n') if line.strip()]
+            parsed_data = []
+            unique_tickers = set()
+            debug_log = []
 
-# Dynamic Explainer
-conf_lvl = 1.0 - alpha_conf
-st.sidebar.caption(
-    f"Calculating **{conf_lvl:.0%} Confidence VaR**.\n\n"
-    f"This estimates the worst daily loss that should occur only **{alpha_conf:.0%}** of the time "
-    f"(approx. 1 bad day every {int(1/alpha_conf)} trading days)."
-)
+            for line in lines:
+                if "," in line: parts = line.split(',')
+                else: parts = line.split()
+                
+                if len(parts) >= 2:
+                    raw_tkr = parts[0].strip().upper()
+                    final_tkr = TICKER_MAP.get(raw_tkr, raw_tkr)
+                    try:
+                        qty_str = re.sub(r"[^0-9\.]", "", parts[1])
+                        qty = float(qty_str)
+                        if qty > 0:
+                            parsed_data.append({"ticker": final_tkr, "qty": qty})
+                            unique_tickers.add(final_tkr)
+                            debug_log.append(f"✅ Parsed: {final_tkr} x {qty}")
+                        else:
+                            debug_log.append(f"⚠️ Skipped {final_tkr}: Qty 0")
+                    except: 
+                        debug_log.append(f"❌ Error parsing line: {line}")
+            
+            # B. FETCH DATA
+            tkr_list = list(unique_tickers)
+            if not tkr_list:
+                st.sidebar.error("No valid tickers found.")
+            else:
+                price_map = fetch_current_prices_batch(tkr_list)
+                name_map = fetch_ticker_names(tkr_list)
+                
+                # C. BUILD PORTFOLIO
+                equity_val = 0.0
+                temp_holdings = []
+                
+                for p in parsed_data:
+                    tkr = p["ticker"]
+                    px = price_map.get(tkr, 0.0)
+                    if px > 0:
+                        val = px * p["qty"]
+                        equity_val += val
+                        display_name = name_map.get(tkr, tkr)
+                        temp_holdings.append({"name": display_name, "ticker": tkr, "value": val, "kind": "EQUITY"})
+                        debug_log.append(f"💰 Priced: {tkr} @ ${px:.2f} = ${val:.2f}")
+                    else:
+                        debug_log.append(f"⚠️ Price Not Found: {tkr}")
 
-# --- LOAD ---
-if not uploaded_file:
-    st.info("👋 To begin, please upload your portfolio Excel file in the sidebar.")
+                # D. FINALIZE
+                total_port_val = equity_val + total_cash
+                new_holdings = []
+                
+                if total_port_val > 0:
+                    for h in temp_holdings:
+                        w = h["value"] / total_port_val
+                        new_holdings.append(Holding(name=h["name"], ticker=h["ticker"], weight=w, kind="EQUITY"))
+                    
+                    if total_cash > 0:
+                        w_cash = total_cash / total_port_val
+                        new_holdings.append(Holding(name="CASH (Input)", ticker="CASH", weight=w_cash, kind="CASH"))
+                    
+                    # SAVE EVERYTHING TO STATE
+                    st.session_state["manual_holdings"] = new_holdings
+                    st.session_state["portfolio_total_value"] = total_port_val  # <--- NEW: SAVING TOTAL VALUE
+                    st.rerun()
+                else:
+                    st.sidebar.error("Total Value is 0. Check inputs.")
+                    with st.sidebar.expander("Debug Log"):
+                        for l in debug_log: st.write(l)
+
+# --- SIMULATION SETTINGS ---
+# (Keep this section unique!)
+if "sim_settings_shown" not in st.session_state:
+    st.sidebar.header("⚙️ Simulation")
+    start_date = st.sidebar.date_input("Start Date", value=pd.to_datetime("2019-01-01"), key="sim_start_date_sidebar")
+    alpha_conf = st.sidebar.slider("VaR Significance Level (Alpha)", 0.01, 0.10, 0.05, 0.01)
+    st.sidebar.caption(f"Calculating **{1.0 - alpha_conf:.0%} Confidence VaR**.")
+
+# --- FINAL CHECK ---
+if not holdings:
+    st.info("👋 Please upload an Excel file OR use 'Manual Entry' to build your portfolio.")
     st.stop()
 
-holdings = load_portfolio(uploaded_file, sheet_name, name_col, weight_col, ticker_col)
+# --- CHECK LOAD ---
 if not holdings:
-    st.error("No valid holdings found. Check your column mappings.")
+    st.info("👋 Please upload an Excel file OR use 'Manual Entry' to build your portfolio.")
     st.stop()
 
 # --- TABS ---
-tab_insp, tab_stress, tab_adv = st.tabs(["🔎 Inspection", "📉 Stress Lab", "⚖️ Advisor & Actions"])
+tab_insp, tab_stress, tab_adv, tab_screen = st.tabs(["🔎 Inspection", "📉 Stress Lab", "⚖️ Advisor & Actions", "🔬 Stock Screener"])
 
+# --- TAB 1: INSPECTION ---
 # --- TAB 1: INSPECTION ---
 with tab_insp:
     # 1. Prepare Data
@@ -877,9 +1102,14 @@ with tab_insp:
     with st.spinner("Fetching Sector & Yield data..."):
         meta_df = fetch_rich_metadata(tkrs)
     
+    # Merge metadata
     df_merged = df_h.merge(meta_df, left_on="ticker", right_index=True, how="left")
     
-    # Enhanced Sector Cleaning
+    # Safety: Ensure cols exist
+    for col in ["Sector", "Yield", "Country"]:
+        if col not in df_merged.columns: df_merged[col] = np.nan
+
+    # Sector Cleaning
     def clean_sector(row):
         sec = row["Sector"] if pd.notna(row["Sector"]) else ""
         name = str(row["name"]).lower()
@@ -891,29 +1121,78 @@ with tab_insp:
         return row["kind"]
 
     df_merged["Sector"] = df_merged.apply(clean_sector, axis=1)
+    
+    # Yield Fix
     df_merged["Yield"] = df_merged["Yield"].fillna(0.0)
     if df_merged["Yield"].max() > 1.0: 
         df_merged["Yield"] = df_merged["Yield"] / 100.0
     
+    # --- CURRENCY TOGGLE & VALUE CALCULATION ---
+    
+    # 1. Fetch Live Exchange Rate (EUR/USD)
+    # EURUSD=X price is "How many USD for 1 EUR" (e.g. 1.05)
+    fx_rate = 1.08 # Fallback default
+    try:
+        fx_obj = yf.Ticker("EURUSD=X")
+        if hasattr(fx_obj, "fast_info"):
+            fetched = fx_obj.fast_info.last_price
+            if fetched: fx_rate = fetched
+    except: pass
+    
+    # 2. Controls
+    c_inv, c_curr = st.columns([2, 1])
+    
+    # Currency Toggle
+    curr_view = c_curr.radio("Currency View", ["USD ($)", "EUR (€)"], horizontal=True)
+    is_eur = "EUR" in curr_view
+    
+    # 3. Determine Default Total Value
+    # We retrieve the USD value calculated in the Sidebar (or default to 10k)
+    base_val_usd = float(st.session_state.get("portfolio_total_value", 10000.0))
+    
+    # If viewing in EUR, convert the default USD value to EUR
+    # Logic: USD_Amount / Rate = EUR_Amount (e.g. $108 / 1.08 = €100)
+    default_input_val = base_val_usd / fx_rate if is_eur else base_val_usd
+    
+    # 4. Input Field (Allows user to override)
+    port_total_val = c_inv.number_input(
+        f"Total Portfolio Value ({'EUR' if is_eur else 'USD'})", 
+        value=default_input_val, 
+        step=1000.0,
+        format="%.2f"
+    )
+    
+    # 5. Calculate Column
+    df_merged["Value"] = df_merged["weight"] * port_total_val
+
     # 2. Metrics
     port_yield = (df_merged["weight"] * df_merged["Yield"]).sum()
     equity_subset = df_merged[df_merged["kind"]=="EQUITY"]
     top_sec = equity_subset["Sector"].mode()[0] if not equity_subset.empty else "N/A"
     
-    m1, m2, m3, m4 = st.columns([1,1,1,1]) # Added 4th col for button
+    m1, m2, m3, m4 = st.columns([1,1,1,1])
     m1.metric("Total Holdings", len(df_h))
     m2.metric("Est. Dividend Yield", f"{port_yield:.2%}")
     m3.metric("Top Sector", top_sec)
 
     # 3. Visuals
-    c_left, c_right = st.columns([1.3, 1])
+    c_left, c_right = st.columns([1.4, 1])
     
     with c_left:
         st.subheader("Holdings Detail")
-        display_cols = ["name", "ticker", "weight", "Sector", "Yield"]
+        display_cols = ["name", "ticker", "weight", "Value", "Sector", "Yield"]
+        valid_cols = [c for c in display_cols if c in df_merged.columns]
+        
+        # Dynamic Formatting Symbol
+        curr_sym = "€" if is_eur else "$"
+        
         st.dataframe(
-            df_merged[display_cols].sort_values("weight", ascending=False)
-            .style.format({"weight": "{:.2%}", "Yield": "{:.2%}"})
+            df_merged[valid_cols].sort_values("weight", ascending=False)
+            .style.format({
+                "weight": "{:.2%}", 
+                "Yield": "{:.2%}",
+                "Value": curr_sym + "{:,.2f}" # Dynamic Currency Symbol
+            })
             .background_gradient(subset=["weight"], cmap="Greens"),
             height=600, use_container_width=True
         )
@@ -940,9 +1219,11 @@ with tab_insp:
 
     # 4. Download Report Logic
     with m4:
-        st.write("") # Spacer
+        st.write("") 
+        valid_cols = [c for c in display_cols if c in df_merged.columns]
+        
         insp_html = generate_inspection_report(
-            df_merged[display_cols].sort_values("weight", ascending=False),
+            df_merged[valid_cols].sort_values("weight", ascending=False),
             {"count": len(df_h), "yield": f"{port_yield:.2%}", "sector": top_sec},
             fig_pie, fig_tree
         )
@@ -1183,3 +1464,85 @@ with tab_adv:
                 if i < 3: st.caption("✨ *Top Pick*")
     else:
         st.info("No matching suggestions found. Try broadening your 'Vision' or 'Sector' criteria.")
+
+# --- TAB 4: STOCK SCREENER ---
+with tab_screen:
+    st.header("🔬 Stock Screener")
+    st.caption("Deep dive into any company fundamentals and price action.")
+    
+    col_search, col_dummy = st.columns([1, 2])
+    query = col_search.text_input("Enter Ticker Symbol", value="NVDA", help="e.g. AAPL, MSFT, TSLA").upper()
+    
+    if query:
+        try:
+            tkr = yf.Ticker(query)
+            info = tkr.info
+            
+            # Check if valid
+            if "symbol" in info:
+                # 1. Header Info
+                c1, c2 = st.columns([3, 1])
+                c1.subheader(f"{info.get('longName', query)} ({query})")
+                c1.markdown(f"**Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}")
+                
+                # Price Banner
+                curr_px = info.get('currentPrice', info.get('regularMarketPreviousClose', 0))
+                prev_close = info.get('regularMarketPreviousClose', curr_px)
+                delta = curr_px - prev_close
+                delta_pct = delta / prev_close if prev_close else 0
+                
+                c2.metric("Current Price", f"${curr_px:,.2f}", f"{delta:+.2f} ({delta_pct:+.2%})")
+                
+                st.markdown("---")
+                
+                # 2. Key Statistics Grid
+                k1, k2, k3, k4 = st.columns(4)
+                
+                mkt_cap = info.get('marketCap', 0)
+                pe = info.get('trailingPE', 0)
+                f_pe = info.get('forwardPE', 0)
+                div = info.get('dividendYield', 0) or 0
+                beta = info.get('beta', 0)
+                target = info.get('targetMeanPrice', 0)
+                
+                # Helper for Billions
+                def fmt_b(num): return f"{num/1e9:.1f}B" if num else "N/A"
+                
+                k1.metric("Market Cap", fmt_b(mkt_cap))
+                k2.metric("P/E Ratio", f"{pe:.1f}x" if pe else "N/A", help=f"Forward P/E: {f_pe:.1f}x" if f_pe else None)
+                k3.metric("Dividend Yield", f"{div:.2%}")
+                k4.metric("Beta (Risk)", f"{beta:.2f}" if beta else "N/A")
+                
+                # 3. Chart
+                st.subheader("Price History (1 Year)")
+                hist = tkr.history(period="1y")
+                
+                if not hist.empty:
+                    # Simple Line Chart
+                    fig = px.area(hist, x=hist.index, y="Close", 
+                                  title=f"{query} Price Action", 
+                                  line_shape="spline")
+                    fig.update_layout(xaxis_title="", yaxis_title="Price", showlegend=False, margin=dict(l=0,r=0,t=30,b=0))
+                    # Add simple moving average
+                    hist["SMA50"] = hist["Close"].rolling(50).mean()
+                    fig.add_scatter(x=hist.index, y=hist["SMA50"], mode='lines', name='50d MA', line=dict(color='orange', width=1, dash='dash'))
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # 4. Business Summary
+                with st.expander("🏢 Business Summary", expanded=False):
+                    st.write(info.get('longBusinessSummary', 'No summary available.'))
+                
+                # 5. Analyst Recommendations
+                with st.expander("🗣️ Analyst Recommendations", expanded=False):
+                    recs = tkr.recommendations
+                    if recs is not None and not recs.empty:
+                        # Clean up formatting if it's the new Yahoo format
+                        st.dataframe(recs.tail(10), use_container_width=True)
+                    else:
+                        st.info("No analyst data found.")
+
+            else:
+                st.error(f"Ticker '{query}' not found on Yahoo Finance.")
+        except Exception as e:
+            st.error(f"Error fetching data: {e}")
