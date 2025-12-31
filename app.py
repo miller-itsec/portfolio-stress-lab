@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, Tuple, List, Optional
 import io
+import requests
 
 # ==========================================
 # 1. CONSTANTS & DATA
@@ -153,6 +154,15 @@ class Holding:
 # ==========================================
 # 2. HELPER FUNCTIONS
 # ==========================================
+def calculate_rsi(data, window=14):
+    """Calculates the Relative Strength Index (RSI) for a price series."""
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def excel_col_to_idx(col: str) -> int:
     col = col.strip().upper()
@@ -1087,10 +1097,9 @@ if not holdings:
     st.info("👋 Please upload an Excel file OR use 'Manual Entry' to build your portfolio.")
     st.stop()
 
-# --- TABS ---
+# --- TABS (ALWAYS VISIBLE) ---
 tab_insp, tab_stress, tab_adv, tab_screen = st.tabs(["🔎 Inspection", "📉 Stress Lab", "⚖️ Advisor & Actions", "🔬 Stock Screener"])
 
-# --- TAB 1: INSPECTION ---
 # --- TAB 1: INSPECTION ---
 with tab_insp:
     # 1. Prepare Data
@@ -1465,84 +1474,162 @@ with tab_adv:
     else:
         st.info("No matching suggestions found. Try broadening your 'Vision' or 'Sector' criteria.")
 
-# --- TAB 4: STOCK SCREENER ---
+# --- TAB 4: STOCK SCREEENER ---
 with tab_screen:
     st.header("🔬 Stock Screener")
-    st.caption("Deep dive into any company fundamentals and price action.")
+    st.caption("Deep dive: Fundamentals, Cash Flow, and Technical Indicators.")
     
-    col_search, col_dummy = st.columns([1, 2])
-    query = col_search.text_input("Enter Ticker Symbol", value="NVDA", help="e.g. AAPL, MSFT, TSLA").upper()
-    
-    if query:
+    # --- HELPER: Yahoo Search API (Fixed User-Agent) ---
+    def search_symbol_yahoo(query):
         try:
-            tkr = yf.Ticker(query)
+            # Using a standard Browser User-Agent is crucial for Yahoo to respond
+            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=10&newsCount=0"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            r = requests.get(url, headers=headers, timeout=5)
+            data = r.json()
+            if "quotes" in data and data["quotes"]:
+                return data["quotes"]
+        except Exception as e:
+            st.error(f"Search API Error: {e}")
+        return []
+
+    # 1. Search Interface
+    col_search, col_res = st.columns([1, 2])
+    search_query = col_search.text_input("Company or Ticker", value="BASF", help="Try 'BASF', 'Shell', or 'Apple'").strip()
+    
+    selected_ticker = None
+    
+    if search_query:
+        results = search_symbol_yahoo(search_query)
+        if results:
+            options = []
+            map_res = {}
+            for r in results:
+                # Filter to ensure we get valid symbols
+                sym = r.get('symbol')
+                name = r.get('shortname', r.get('longname', 'N/A'))
+                exch = r.get('exchDisp', r.get('exchange', 'N/A'))
+                
+                # Create a readable label
+                label = f"{sym} | {name} ({exch})"
+                options.append(label)
+                map_res[label] = sym
+            
+            sel_label = col_res.selectbox("Select Result:", options, index=0)
+            if sel_label:
+                selected_ticker = map_res[sel_label]
+        else:
+            col_res.warning(f"No results found for '{search_query}'. Try the exact ticker (e.g. BAS.DE).")
+
+    st.markdown("---")
+
+    # 2. Render Data
+    if selected_ticker:
+        try:
+            tkr = yf.Ticker(selected_ticker)
             info = tkr.info
             
-            # Check if valid
-            if "symbol" in info:
-                # 1. Header Info
+            # Fetch History
+            hist = tkr.history(period="2y")
+            
+            # Check for valid data
+            if ("symbol" in info or "longName" in info) and not hist.empty:
+                currency = info.get('currency', 'USD')
+                
+                # --- Header & Price ---
                 c1, c2 = st.columns([3, 1])
-                c1.subheader(f"{info.get('longName', query)} ({query})")
-                c1.markdown(f"**Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}")
+                c1.subheader(f"{info.get('longName', selected_ticker)} ({selected_ticker})")
+                c1.caption(f"**Sector:** {info.get('sector', 'N/A')}  |  **Industry:** {info.get('industry', 'N/A')}")
                 
-                # Price Banner
+                # Live Price Logic
                 curr_px = info.get('currentPrice', info.get('regularMarketPreviousClose', 0))
+                if not curr_px and not hist.empty:
+                    curr_px = hist["Close"].iloc[-1]
+                
                 prev_close = info.get('regularMarketPreviousClose', curr_px)
-                delta = curr_px - prev_close
-                delta_pct = delta / prev_close if prev_close else 0
                 
-                c2.metric("Current Price", f"${curr_px:,.2f}", f"{delta:+.2f} ({delta_pct:+.2%})")
+                if prev_close:
+                    delta = curr_px - prev_close
+                    delta_pct = delta / prev_close if prev_close else 0
+                    color = "green" if delta >= 0 else "red"
+                    c2.markdown(f"""
+                    <div style="text-align: right;">
+                        <span style="font-size: 28px; font-weight: bold;">{currency} {curr_px:,.2f}</span><br>
+                        <span style="color: {color}; font-size: 16px;">{delta:+.2f} ({delta_pct:+.2%})</span>
+                    </div>
+                    """, unsafe_allow_html=True)
                 
-                st.markdown("---")
+                st.markdown("### 📊 Key Metrics")
                 
-                # 2. Key Statistics Grid
-                k1, k2, k3, k4 = st.columns(4)
-                
-                mkt_cap = info.get('marketCap', 0)
-                pe = info.get('trailingPE', 0)
-                f_pe = info.get('forwardPE', 0)
-                div = info.get('dividendYield', 0) or 0
-                beta = info.get('beta', 0)
-                target = info.get('targetMeanPrice', 0)
-                
-                # Helper for Billions
-                def fmt_b(num): return f"{num/1e9:.1f}B" if num else "N/A"
-                
-                k1.metric("Market Cap", fmt_b(mkt_cap))
-                k2.metric("P/E Ratio", f"{pe:.1f}x" if pe else "N/A", help=f"Forward P/E: {f_pe:.1f}x" if f_pe else None)
-                k3.metric("Dividend Yield", f"{div:.2%}")
-                k4.metric("Beta (Risk)", f"{beta:.2f}" if beta else "N/A")
-                
-                # 3. Chart
-                st.subheader("Price History (1 Year)")
-                hist = tkr.history(period="1y")
-                
-                if not hist.empty:
-                    # Simple Line Chart
-                    fig = px.area(hist, x=hist.index, y="Close", 
-                                  title=f"{query} Price Action", 
-                                  line_shape="spline")
-                    fig.update_layout(xaxis_title="", yaxis_title="Price", showlegend=False, margin=dict(l=0,r=0,t=30,b=0))
-                    # Add simple moving average
-                    hist["SMA50"] = hist["Close"].rolling(50).mean()
-                    fig.add_scatter(x=hist.index, y=hist["SMA50"], mode='lines', name='50d MA', line=dict(color='orange', width=1, dash='dash'))
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                # 4. Business Summary
-                with st.expander("🏢 Business Summary", expanded=False):
-                    st.write(info.get('longBusinessSummary', 'No summary available.'))
-                
-                # 5. Analyst Recommendations
-                with st.expander("🗣️ Analyst Recommendations", expanded=False):
-                    recs = tkr.recommendations
-                    if recs is not None and not recs.empty:
-                        # Clean up formatting if it's the new Yahoo format
-                        st.dataframe(recs.tail(10), use_container_width=True)
-                    else:
-                        st.info("No analyst data found.")
+                def fmt_num(n):
+                    if not n: return "-"
+                    if abs(n) >= 1e9: return f"{n/1e9:.2f}B"
+                    if abs(n) >= 1e6: return f"{n/1e6:.2f}M"
+                    return f"{n:,.0f}"
 
+                # --- ROW 1: VALUATION ---
+                st.markdown("#### Valuation & Efficiency")
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Market Cap", fmt_num(info.get('marketCap')))
+                k2.metric("Trailing P/E", f"{info.get('trailingPE', 0):.1f}x" if info.get('trailingPE') else "-")
+                k3.metric("Forward P/E", f"{info.get('forwardPE', 0):.1f}x" if info.get('forwardPE') else "-")
+                k4.metric("PEG Ratio", f"{info.get('pegRatio', 0):.2f}" if info.get('pegRatio') else "-")
+                k5.metric("Profit Margin", f"{info.get('profitMargins', 0):.1%}" if info.get('profitMargins') else "-")
+
+                # --- ROW 2: FINANCIAL HEALTH ---
+                st.markdown("#### Financial Health")
+                f1, f2, f3, f4, f5 = st.columns(5)
+                f1.metric("Op. Cash Flow", fmt_num(info.get('operatingCashflow')))
+                f2.metric("Free Cash Flow", fmt_num(info.get('freeCashflow')))
+                f3.metric("Total Debt", fmt_num(info.get('totalDebt')))
+                f4.metric("Debt/Equity", f"{info.get('debtToEquity', 0):.2f}" if info.get('debtToEquity') else "-")
+                f5.metric("ROE", f"{info.get('returnOnEquity', 0):.1%}" if info.get('returnOnEquity') else "-")
+
+                # --- ROW 3: TECHNICALS ---
+                st.markdown("#### Technical Indicators")
+                if not hist.empty:
+                    # RSI
+                    hist["RSI"] = calculate_rsi(hist["Close"], 14)
+                    cur_rsi = hist["RSI"].iloc[-1]
+                    
+                    # MA
+                    hist["SMA50"] = hist["Close"].rolling(50).mean()
+                    hist["SMA200"] = hist["Close"].rolling(200).mean()
+                    
+                    cur_sma50 = hist["SMA50"].iloc[-1]
+                    cur_sma200 = hist["SMA200"].iloc[-1]
+                    
+                    rsi_status = "Neutral"
+                    if cur_rsi > 70: rsi_status = "Overbought (High)"
+                    elif cur_rsi < 30: rsi_status = "Oversold (Low)"
+                    
+                    t1, t2, t3, t4 = st.columns(4)
+                    t1.metric("RSI (14)", f"{cur_rsi:.1f}", rsi_status)
+                    t2.metric("50-Day MA", f"{cur_sma50:,.2f}", f"{(curr_px - cur_sma50):.2f}")
+                    t3.metric("200-Day MA", f"{cur_sma200:,.2f}" if pd.notna(cur_sma200) else "N/A")
+                    t4.metric("Beta", f"{info.get('beta', 0):.2f}")
+                    
+                    # Chart
+                    display_hist = hist.tail(252).copy()
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=display_hist.index, y=display_hist["Close"], mode='lines', name='Price', line=dict(color='#636EFA', width=2), fill='tozeroy', fillcolor='rgba(99, 110, 250, 0.1)'))
+                    fig.add_trace(go.Scatter(x=display_hist.index, y=display_hist["SMA50"], mode='lines', name='50d MA', line=dict(color='#FFA15A', width=1.5)))
+                    if display_hist["SMA200"].notna().any():
+                        fig.add_trace(go.Scatter(x=display_hist.index, y=display_hist["SMA200"], mode='lines', name='200d MA', line=dict(color='#00CC96', width=1.5, dash='dash')))
+
+                    fig.update_layout(title=f"{selected_ticker} - 1 Year Trend", yaxis_title=currency, height=500, hovermode="x unified", margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # --- TABS ---
+                info_t1, info_t2 = st.tabs(["🏢 Business Summary", "🗣️ Analyst Recs"])
+                with info_t1: st.write(info.get('longBusinessSummary', 'No summary available.'))
+                with info_t2:
+                    recs = tkr.recommendations
+                    if recs is not None and not recs.empty: st.dataframe(recs.tail(10), use_container_width=True)
+                    else: st.info("No analyst data found.")
             else:
-                st.error(f"Ticker '{query}' not found on Yahoo Finance.")
+                st.error("Could not fetch detailed data. Ticker might be delisted or invalid.")
         except Exception as e:
-            st.error(f"Error fetching data: {e}")
+            st.error(f"Error loading data: {e}")
