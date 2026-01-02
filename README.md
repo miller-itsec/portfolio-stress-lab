@@ -1,47 +1,73 @@
 # 📉 Portfolio Stress Lab & Strategic Advisor
 
-A **professional-grade Python dashboard** for analyzing investment portfolios.  
-This tool combines **Monte Carlo risk simulation**, **Scenario Analysis**, and **Rules-Based Rebalancing** into a clean **Streamlit** interface.
+A **professional-grade Python dashboard** for analyzing investment portfolios.
 
-Designed for investors who want to move beyond simple spreadsheets and visualize **"What‑If" scenarios**.
+This tool combines **Monte Carlo risk simulation**, **Scenario Analysis**, **Smart Stock Screening**, and **Rules-Based Rebalancing** into a clean **Streamlit** interface.
+
+Designed for investors who want to move beyond simple spreadsheets and visualize **“What-If” scenarios** with institutional-grade logic.
 
 ---
 
 ## ✨ Features
 
 ### 🔍 Portfolio Inspection
-- **Deep Dive Visualization**: Interactive **Sunburst** and **Treemap** charts for sector and asset allocation.
-- **Rich Metadata**: Automatic enrichment with **Dividend Yield, Sector, and Country** via Yahoo Finance.
-- **Income Analysis**: Calculates the **weighted average dividend yield** of the portfolio.
-- **Report Generation**: One‑click download of a detailed **HTML Inspection Report**.
+- **Deep Dive Visualization**  
+  Interactive **Sunburst** and **Treemap** charts for sector and asset allocation.
+- **Rich Metadata**  
+  Automatic enrichment with **Dividend Yield, Sector, and Country** via Yahoo Finance.
+- **Income Analysis**  
+  Calculates the **weighted average dividend yield**  
+  (supports manual yield overrides for Cash / Fixed Income).
+- **Report Generation**  
+  One-click download of a detailed **HTML Inspection Report**.
+
+---
 
 ### 🌪️ Stress Lab (Risk Engine)
-- **Monte Carlo Simulation**: Calculates **Value at Risk (VaR)**, **Conditional VaR**, and **Max Drawdown probabilities**.
-- **Scenario Stress Testing**:
-  - Equity Crash (**‑30%**)
+- **Monte Carlo Simulation**
+  - Value at Risk (**VaR**)
+  - Conditional VaR (**CVaR**)
+  - Max Drawdown probabilities
+- **Scenario Stress Testing**
+  - Equity Crash (**-30%**)
   - Inflation Shock / **Stagflation**
   - **Credit Spread Widening**
   - **Interest Rate Hikes (+200 bps)**
-- **Rolling Regime Analysis**:
-  - Rolling **Volatility** ("Fear")
-  - Rolling **Sharpe Ratio** ("Efficiency")
-- **Correlation Heatmap**: Identifies diversification breakdowns and highly correlated assets.
+  - **Bull Market** (upside comparison)
+- **Rolling Regime Analysis**
+  - Rolling **Volatility** (“Fear”)
+  - Rolling **Sharpe Ratio** (“Efficiency”)
+- **Correlation Heatmap**
+  - Identifies diversification breakdowns and highly correlated assets.
 
-### ⚖️ Advisor & Rebalancing
-- **Rules‑Based Rebalancing** using configurable constraints:
-  - **Minimum Cash Buffer** (e.g., 15%)
-  - **Maximum Position Cap** (e.g., no asset > 12%)
-- **Ghost Position Simulation**:
-  - Simulate hypothetical additions (e.g., *"What if I add 3% Microsoft?"*)
-  - Automatically determines funding trades.
-- **Strategic Screener**:
-  - Curated universe of ~100 high‑quality stocks
-  - Filters by:
-    - **Vision**: Income | Growth | Crisis‑Ready
-    - **Hedge Need**: Stagflation, Crash Protection, etc.
-    - **Sector Preference**: Healthcare, Tech, Energy, etc.
-- **Impact Analysis**:
-  - Quantifies how each suggested trade improves or worsens portfolio resilience under stress scenarios.
+---
+
+### ⚖️ Strategic Advisor (Smart 4.0)
+- **Composite Scoring Engine** (0–100)
+  - **Valuation**: P/E relative to fair value
+  - **Momentum**: RSI (“buy the dip”) + trend vs 200-day SMA
+  - **Diversification**: Penalties for sector concentration
+  - **Risk / Reward**: Downside risk added vs upside potential gained
+- **Rules-Based Rebalancing**
+  - Automated waterfall logic to trim positions
+  - Refill cash buffers
+  - Fund new ideas
+- **Deep Dive Workflow**
+  - One-click **Analyze** buttons to inspect recommendations instantly.
+
+---
+
+### 🔬 Advanced Stock Screener
+- **Sector Benchmarking**
+  - Compares **P/E**, **Profit Margins**, and **ROE** against industry averages
+- **Technical Dashboard**
+  - RSI (14)
+  - SMA 50 / 200 distance
+  - Beta
+- **Live Market Data**
+  - Real-time pricing
+  - Daily price change
+  - Analyst recommendations
 
 ---
 
@@ -51,83 +77,63 @@ Designed for investors who want to move beyond simple spreadsheets and visualize
 - Python **3.8+**
 - `pip`
 
-### 1️⃣ Clone the Repository
+### Clone the Repository
 ```bash
 git clone https://github.com/yourusername/portfolio-stress-lab.git
 cd portfolio-stress-lab
 ```
 
-### 2️⃣ Install Dependencies
+### Install Dependencies
 ```bash
 pip install -r requirements.txt
-```
-
-### Recommended `requirements.txt`
-```text
-streamlit
-pandas
-numpy
-yfinance
-plotly
-scipy
 ```
 
 ---
 
 ## 🖥️ Usage
-
-Run the dashboard locally:
 ```bash
 streamlit run app.py
 ```
 
-The application will open automatically at:
-```
+Open:
 http://localhost:8501
-```
 
 ---
 
-## 📊 Data Input (Excel Only)
+## 📊 Data Input Methods
 
-The app requires a **Microsoft Excel (`.xlsx`)** file.
+### Manual Entry
+```txt
+AAPL, 10
+MSFT, 5
+BAS.DE, 20
+```
 
-### Required Columns
-You can map columns in the **Sidebar**, but the defaults are:
+### Excel Upload
+Supports Name, Ticker, Weight, Value (optional), Yield (optional).
 
-- **Name (Column A)**: The name of the holding (e.g., `"Apple Inc"` or `"Cash"`)
-- **Ticker (Column B)**: The symbol (e.g., `AAPL`, `MSFT`). Use Yahoo Finance format (e.g., `BMW.DE` for German stocks).
-- **Weight (Column AQ)**: The position size (e.g., `0.05` for 5% — the app may also accept locale formats like `5,0` depending on parsing settings).
-
-> **Note:** The app automatically detects **Cash** and **Alternatives** based on keywords in the **Name** column.
 ---
 
 ## 🧠 Logic & Methodology
 
-### Risk Metrics
-- **Value at Risk (VaR)**  
-  - Historical simulation using **bootstrap resampling**
-- **Volatility**
-  - Annualized standard deviation of daily returns
+### Smart Advisor Scoring
+- Scenario Impact
+- Sector Penalty
+- Technicals
+- Fundamentals
 
-### Rebalancing Logic — *Waterfall Method*
-1. **Trim** positions exceeding the maximum cap.
-2. **Secure Cash** to meet the minimum buffer.
-3. **Fund New Ideas** (ghost positions first).
-4. **Reinvest** remaining surplus into underweight assets.
+### Rebalancing Waterfall
+1. Trim oversized positions
+2. Secure cash buffer
+3. Fund new ideas
+4. Reinvest surplus
 
 ---
 
 ## ⚠️ Disclaimer
-
-This software is provided **for educational and informational purposes only**.  
-It does **not** constitute financial advice.
-
-Market data is sourced from **Yahoo Finance** and may be delayed or inaccurate.  
-Past performance and simulated stress tests are **not indicative of future results**.
+Educational use only. No financial advice.
 
 ---
 
 ## 📄 License
-
 MIT License

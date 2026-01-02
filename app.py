@@ -31,6 +31,21 @@ TICKER_MAP = {
     "BMT": "BTI", "CLE": "CSL", "ONK": "OKE", "BAYN": "BAYN.DE", "BAC": "VZ",
 }
 
+# Approximate Sector Benchmarks (P/E, Profit Margin, ROE)
+SECTOR_BENCHMARKS = {
+    "Technology": {"PE": 35.0, "Margin": 0.20, "ROE": 0.25},
+    "Healthcare": {"PE": 25.0, "Margin": 0.15, "ROE": 0.18},
+    "Financial Services": {"PE": 12.0, "Margin": 0.25, "ROE": 0.12},
+    "Energy": {"PE": 10.0, "Margin": 0.10, "ROE": 0.15},
+    "Consumer Cyclical": {"PE": 22.0, "Margin": 0.08, "ROE": 0.15},
+    "Consumer Defensive": {"PE": 24.0, "Margin": 0.10, "ROE": 0.20},
+    "Industrials": {"PE": 20.0, "Margin": 0.08, "ROE": 0.14},
+    "Utilities": {"PE": 18.0, "Margin": 0.12, "ROE": 0.10},
+    "Basic Materials": {"PE": 15.0, "Margin": 0.07, "ROE": 0.12},
+    "Real Estate": {"PE": 35.0, "Margin": 0.30, "ROE": 0.08}, # High P/E due to depreciation
+    "Communication Services": {"PE": 20.0, "Margin": 0.15, "ROE": 0.12}
+}
+
 ADVISOR_PALETTE = [
     # --- HEALTHCARE (Defensive / Income) ---
     {"name": "Johnson & Johnson", "ticker": "JNJ", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["balanced", "income"], "scenarios": ["equity_crash", "credit_event", "stagflation"], "why": "AAA-rated balance sheet; defensive stabilizer."},
@@ -40,7 +55,6 @@ ADVISOR_PALETTE = [
     {"name": "Merck & Co.", "ticker": "MRK", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["balanced", "income"], "scenarios": ["equity_crash"], "why": "Oncology dominance; reasonable valuation."},
     {"name": "AbbVie", "ticker": "ABBV", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["income", "balanced"], "scenarios": ["equity_crash", "stagflation"], "why": "High yield; strong immunology franchise."},
     {"name": "Sanofi", "ticker": "SNY", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["income", "balanced"], "scenarios": ["equity_crash"], "why": "Cheap valuation; EU defensive exposure."},
-    {"name": "Roche Holding", "ticker": "RHHBY", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["balanced", "income"], "scenarios": ["equity_crash"], "why": "Diagnostics & Pharma giant; Swiss quality."},
     {"name": "Pfizer", "ticker": "PFE", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["income"], "scenarios": ["equity_crash"], "why": "Deep value; high yield turnaround play."},
     {"name": "Gilead Sciences", "ticker": "GILD", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["income", "balanced"], "scenarios": ["equity_crash"], "why": "Cashflow machine; HIV/Oncology value."},
     {"name": "Thermo Fisher", "ticker": "TMO", "bucket": "EQUITY", "sector": "Healthcare", "vision": ["growth", "balanced"], "scenarios": ["recovery"], "why": "Life sciences pick-and-shovel leader."},
@@ -70,7 +84,6 @@ ADVISOR_PALETTE = [
     {"name": "Coca-Cola", "ticker": "KO", "bucket": "EQUITY", "sector": "Staples", "vision": ["balanced", "income"], "scenarios": ["equity_crash"], "why": "Brand power; pricing power."},
     {"name": "Costco", "ticker": "COST", "bucket": "EQUITY", "sector": "Staples", "vision": ["growth", "balanced"], "scenarios": ["soft_landing", "equity_crash"], "why": "Best-in-class retailer; membership moat."},
     {"name": "Walmart", "ticker": "WMT", "bucket": "EQUITY", "sector": "Staples", "vision": ["balanced"], "scenarios": ["equity_crash", "stagflation"], "why": "Defensive scale; grocery dominance."},
-    {"name": "Nestle", "ticker": "NSRGY", "bucket": "EQUITY", "sector": "Staples", "vision": ["balanced", "income"], "scenarios": ["equity_crash"], "why": "Global food giant; Swiss safety."},
     {"name": "Philip Morris", "ticker": "PM", "bucket": "EQUITY", "sector": "Staples", "vision": ["income"], "scenarios": ["equity_crash"], "why": "High yield; smoke-free transition leader."},
     {"name": "Altria", "ticker": "MO", "bucket": "EQUITY", "sector": "Staples", "vision": ["income"], "scenarios": ["equity_crash"], "why": "Maximum yield; domestic US tobacco."},
     {"name": "British American Tobacco", "ticker": "BTI", "bucket": "EQUITY", "sector": "Staples", "vision": ["income"], "scenarios": ["equity_crash"], "why": "Deep value; high dividend yield."},
@@ -142,6 +155,7 @@ SCENARIO_SHOCKS = {
     "rates_up":     {"EQUITY": -0.10, "FIN": -0.12, "REIT": -0.18, "BONDS": -0.12, "ALT": -0.02, "CASH": 0.0, "CASHLIKE": 0.0},
     "stagflation":  {"EQUITY": -0.15, "FIN": -0.20, "REIT": -0.18, "BONDS": -0.08, "ALT": +0.05, "CASH": 0.0, "CASHLIKE": 0.0},
     "credit_event": {"EQUITY": -0.25, "FIN": -0.35, "REIT": -0.30, "BONDS": -0.07, "ALT": -0.05, "CASH": 0.0, "CASHLIKE": 0.0},
+	"bull_market":  {"EQUITY": 0.20, "FIN": 0.25, "REIT": 0.15, "BONDS": 0.05, "ALT": 0.05, "CASH": 0.0, "CASHLIKE": 0.0},
 }
 
 @dataclass
@@ -150,6 +164,7 @@ class Holding:
     weight: float
     kind: str
     ticker: Optional[str] = None
+    yield_val: Optional[float] = None
 
 # ==========================================
 # 2. HELPER FUNCTIONS
@@ -181,6 +196,31 @@ def parse_percent_de(value) -> float:
     except ValueError: return np.nan
     return v / 100.0 if v > 1.5 else v
 
+def parse_value_clean(value) -> float:
+    """Cleans currency strings like '$1,200.00' or '1.200,00' to floats."""
+    if pd.isna(value): return 0.0
+    if isinstance(value, (int, float, np.floating)): return float(value)
+    
+    s = str(value).strip()
+    # Simple regex to keep digits, dots, commas, minus
+    s = re.sub(r"[^\d,\.-]", "", s)
+    if not s: return 0.0
+    
+    # European format heuristic (1.000,00)
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."): 
+            s = s.replace(".", "").replace(",", ".")
+        else: 
+            s = s.replace(",", "")
+    elif "," in s:
+        # Check if comma is decimal separator (e.g. 12,50 vs 1,200)
+        # If comma is followed by 2 digits, likely decimal
+        if len(s.split(",")[-1]) == 2: s = s.replace(",", ".")
+        else: s = s.replace(",", "")
+        
+    try: return float(s)
+    except: return 0.0
+
 def classify_name(name: str) -> str:
     n = name.strip().lower()
     if any(k in n for k in CASH_KEYWORDS): return "CASH"
@@ -200,6 +240,55 @@ def get_col_series(df: pd.DataFrame, col_spec: str) -> pd.Series:
         return df.iloc[:, idx] if idx < df.shape[1] else pd.Series()
     matches = [c for c in df.columns if str(c).strip().lower() == col_spec.strip().lower()]
     return df[matches[0]] if matches else pd.Series()
+
+@st.cache_data(ttl=3600*4)
+def fetch_advisor_live_data(tickers: List[str]) -> pd.DataFrame:
+    """Batch fetches P/E, RSI, and SMA200 values."""
+    if not tickers: return pd.DataFrame()
+    try:
+        data = yf.download(tickers, period="2y", interval="1d", progress=False, group_by='ticker', auto_adjust=True)
+    except: return pd.DataFrame()
+
+    results = []
+    try: objs = yf.Tickers(" ".join(tickers))
+    except: objs = None
+
+    for t in tickers:
+        try:
+            # Handle MultiIndex vs Single Index
+            if len(tickers) > 1:
+                if t in data.columns.get_level_values(0): df_t = data[t].copy()
+                else: continue
+            else: df_t = data.copy()
+
+            df_t = df_t.dropna(how="all")
+            if df_t.empty: continue
+
+            curr_px = df_t["Close"].iloc[-1]
+            
+            # RSI
+            delta = df_t["Close"].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            rsi = (100 - (100 / (1 + rs))).iloc[-1]
+            
+            # SMA 200
+            sma200 = df_t["Close"].rolling(200).mean().iloc[-1]
+            
+            # PE
+            pe = np.nan
+            if objs:
+                try: pe = objs.tickers[t].info.get('trailingPE') or objs.tickers[t].info.get('forwardPE')
+                except: pass
+            
+            results.append({
+                "Ticker": t, "Price": curr_px, "RSI": rsi, 
+                "SMA200_Val": sma200, "PE": pe if pe else np.nan
+            })
+        except: continue
+        
+    return pd.DataFrame(results).set_index("Ticker")
 
 def fetch_current_prices_batch(tickers: List[str], target_currency="USD") -> Dict[str, float]:
     """
@@ -398,32 +487,52 @@ def fetch_rich_metadata(tickers: List[str]) -> pd.DataFrame:
     if not data: return pd.DataFrame()
     return pd.DataFrame(data).set_index("Ticker")
 
-def load_portfolio(file_obj, sheet: str, name_col: str, weight_col: str, ticker_col: str) -> List[Holding]:
+def load_portfolio(file_obj, sheet: str, name_col: str, weight_col: str, ticker_col: str, value_col: str = None, yield_col: str = None) -> Tuple[List[Holding], Optional[float]]:
     try:
         df = pd.read_excel(file_obj, sheet_name=sheet, header=0, engine="openpyxl")
-    except Exception: return []
+    except Exception: return [], None
 
     name_s = get_col_series(df, name_col)
     w_s = get_col_series(df, weight_col)
     t_s = get_col_series(df, ticker_col) if ticker_col else None
+    
+    # Optional Columns
+    v_s = get_col_series(df, value_col) if value_col else None
+    y_s = get_col_series(df, yield_col) if yield_col else None
 
-    if name_s.empty or w_s.empty: return []
+    if name_s.empty or w_s.empty: return [], None
 
     holdings = []
     tickers_to_lookup = []
+    total_calculated_value = 0.0
 
     for i, (nm, w) in enumerate(zip(name_s.tolist(), w_s.tolist())):
         nm_str = str(nm).strip() if pd.notna(nm) else ""
         raw_t = t_s.iloc[i] if t_s is not None else None
         tkr_str = str(raw_t).strip() if pd.notna(raw_t) else ""
 
-        # Logic: If Name is missing but Ticker exists, use Ticker temporarily
         if (not nm_str or nm_str.lower() == "nan") and tkr_str and tkr_str.lower() != "nan":
             nm_str = tkr_str.upper()
 
         if not nm_str or nm_str.lower() == "nan": continue
         wt = parse_percent_de(w)
         if np.isnan(wt): continue
+        
+        # Accumulate Total Value
+        if v_s is not None and len(v_s) > i:
+            val = parse_value_clean(v_s.iloc[i])
+            total_calculated_value += val
+            
+        # Parse Manual Yield (Strict / 100)
+        manual_yield = None
+        if y_s is not None and len(y_s) > i:
+            raw_y = y_s.iloc[i]
+            # Only process if not empty
+            if pd.notna(raw_y) and str(raw_y).strip() != "":
+                # 1. Clean the number (handle currency symbols, commas)
+                cleaned_y = parse_value_clean(raw_y)
+                # 2. Strict Normalization: 5.5 -> 0.055
+                manual_yield = cleaned_y / 100.0
 
         kind = classify_name(nm_str)
         tkr = None
@@ -435,25 +544,20 @@ def load_portfolio(file_obj, sheet: str, name_col: str, weight_col: str, ticker_
             tkr = TICKER_MAP.get(tkr.upper(), tkr.upper())
             tickers_to_lookup.append(tkr)
 
-        holdings.append(Holding(name=nm_str, weight=float(wt), kind=kind, ticker=tkr))
+        holdings.append(Holding(name=nm_str, weight=float(wt), kind=kind, ticker=tkr, yield_val=manual_yield))
 
-    # --- ENRICH NAMES ---
-    # Batch fetch names for all found tickers
     if tickers_to_lookup:
         name_map = fetch_ticker_names(list(set(tickers_to_lookup)))
         for h in holdings:
             if h.kind == "TICKER" and h.ticker in name_map:
-                # Only overwrite if the current name looks like a ticker (short, caps)
-                # or is generic. If you manually named it "My Bayer Stock", we keep that.
-                # Heuristic: if name equals ticker, overwrite it.
                 if h.name.upper() == h.ticker.upper() or len(h.name) < 6:
                     h.name = name_map[h.ticker]
 
     total = sum(h.weight for h in holdings)
     if total > 0:
         for h in holdings: h.weight /= total
-    
-    return holdings
+        
+    return holdings, (total_calculated_value if total_calculated_value > 0 else None)
 
 @st.cache_data(ttl=3600*12)
 def fetch_prices_for_tickers(tickers: List[str], start: str, end: Optional[str] = None) -> pd.DataFrame:
@@ -897,57 +1001,137 @@ def suggest_rebalance_robust(holdings, cash_buffer, max_weight, new_adds=None, e
 
 def advisor_rank_with_impact(holdings, price_df, vision, scenario, add_weight, sectors=None):
     """
-    Ranks Advisor candidates and calculates "Before vs After" impact stats.
-    Supports filtering by 'sectors' (list of strings).
+    Smart Advisor 4.0: 
+    - Risk/Reward Trade-off analysis.
+    - Contextual MA (Distance to SMA).
+    - Score factors in Upside Potential.
     """
-    # 1. Base Portfolio Stats (Before)
+    # 1. Base Stats
     base_w = pd.Series({h.name: h.weight for h in holdings})
-    # If using Price DF for risk, we need only ticker weights
-    # But for "Scenario Impact", we use bucket approximations on the full portfolio
     
-    base_stats = calculate_portfolio_impact(base_w, price_df, scenario)
+    # Calculate Base Risk (Selected Scenario) AND Base Reward (Bull Market)
+    base_risk = calculate_portfolio_impact(base_w, price_df, scenario)["scenario_pnl"]
+    base_reward = calculate_portfolio_impact(base_w, price_df, "bull_market")["scenario_pnl"]
     
+    # Sector Exposure
+    current_tickers = [h.ticker for h in holdings if h.ticker]
+    meta = fetch_rich_metadata(current_tickers)
+    current_sector_weights = {}
+    if not meta.empty:
+        ticker_sector_map = meta["Sector"].to_dict()
+        for h in holdings:
+            s = "Unknown"
+            if h.ticker and h.ticker in ticker_sector_map: s = ticker_sector_map[h.ticker]
+            elif h.kind == "CASH": s = "Cash"
+            current_sector_weights[s] = current_sector_weights.get(s, 0) + h.weight
+
     rows = []
     exist_tkrs = {h.ticker for h in holdings if h.ticker}
     
-    # 2. Iterate Candidates
+    candidates = []
     for c in ADVISOR_PALETTE:
-        # FILTERS
         if vision not in c["vision"]: continue
         if scenario not in c["scenarios"]: continue
         if c["ticker"] in exist_tkrs: continue
-        
-        # New: Sector Filter
         if sectors and c["sector"] not in sectors: continue
+        candidates.append(c)
         
-        # 3. Simulate Trade: Add Candidate, Trim Cash
+    if not candidates: return pd.DataFrame()
+    
+    live_data = fetch_advisor_live_data([c["ticker"] for c in candidates])
+    
+    for c in candidates:
+        t = c["ticker"]
+        sec = c["sector"]
+        
+        # --- A. Simlate Trade ---
         new_w = base_w.copy()
         new_w[c["name"]] = add_weight
-        
-        # Fund from Cash (Simplified: Assume cash exists)
         cash_names = [h.name for h in holdings if h.kind == "CASH"]
-        if cash_names:
-            new_w[cash_names[0]] = max(0, new_w[cash_names[0]] - add_weight)
-        
+        if cash_names: new_w[cash_names[0]] = max(0, new_w[cash_names[0]] - add_weight)
         new_w = new_w / new_w.sum()
         
-        # 4. Calculate Stats (After)
-        after_stats = calculate_portfolio_impact(new_w, price_df, scenario)
-        delta_pnl = after_stats["scenario_pnl"] - base_stats["scenario_pnl"]
+        # --- B. Calculate Deltas ---
+        # 1. Risk Delta (Did we make the crash worse?)
+        new_risk = calculate_portfolio_impact(new_w, price_df, scenario)["scenario_pnl"]
+        delta_risk = new_risk - base_risk # Usually negative (worse) if buying equity
         
-        impact_str = f"{base_stats['scenario_pnl']:.2%} → {after_stats['scenario_pnl']:.2%} ({delta_pnl:+.2%})"
+        # 2. Reward Delta (Did we improve upside?)
+        new_reward = calculate_portfolio_impact(new_w, price_df, "bull_market")["scenario_pnl"]
+        delta_reward = new_reward - base_reward # Usually positive (better)
         
+        # --- C. Scoring ---
+        score = 50.0 
+        
+        # Reward the trade if Upside > Downside risk added
+        # Multiplier arbitrary to scale to 0-100
+        net_benefit = (delta_reward * 1.2) + delta_risk 
+        if net_benefit > 0: score += 15
+        
+        # Sector Diversity
+        curr_sec_w = current_sector_weights.get(sec, 0.0)
+        if curr_sec_w > 0.30: score -= 30 
+        elif curr_sec_w > 0.20: score -= 15
+        elif curr_sec_w < 0.05: score += 10
+            
+        # Technicals
+        rsi_val = 50
+        pe_val = np.nan
+        ma_dist_str = "-"
+        
+        if t in live_data.index:
+            row = live_data.loc[t]
+            rsi_val = row["RSI"]
+            pe_val = row["PE"]
+            px = row["Price"]
+            sma = row["SMA200_Val"]
+            
+            # RSI
+            if rsi_val < 35: score += 15 
+            elif rsi_val > 75: score -= 15
+            
+            # MA Distance (Contextual)
+            if pd.notna(sma) and pd.notna(px) and sma > 0:
+                dist = (px - sma) / sma
+                color_dot = "🟢" if dist > 0 else "🔴"
+                ma_dist_str = f"{color_dot} {dist:+.1%}"
+                
+                # Trend Score
+                if dist > 0: score += 10 # Uptrend
+                if dist < -0.15: score += 5 # Deep value / Mean reversion candidate?
+            
+            # Valuation
+            if pd.notna(pe_val):
+                if pe_val < 20: score += 10 
+                elif pe_val > 60: score -= 10
+                
+        score = max(0, min(100, score))
+        
+        # Readable Impact String
+        # Shows: "📉 -0.2% | 📈 +0.5%"
+        risk_str = f"📉 {delta_risk*100:+.2f}%"
+        rew_str = f"📈 {delta_reward*100:+.2f}%"
+        
+        # Highlight the "Net" effect simply for the user
+        impact_str = f"{risk_str} | {rew_str}"
+            
         rows.append({
-            "Ticker": c["ticker"],
+            "Score": int(score),
+            "Ticker": t,
             "Name": c["name"],
+            "Sector": sec,
+            "Sector_Exp": curr_sec_w,
+            "RSI": f"{rsi_val:.0f}",
+            "P/E": f"{pe_val:.1f}" if pd.notna(pe_val) else "-",
+            "vs SMA200": ma_dist_str, # New Contextual Column
+            "Risk/Reward": impact_str, # New Combined Column
             "Why": c["why"],
-            "Sector": c["sector"],
-            "Impact (Scenario)": impact_str,
-            "Raw_Delta": delta_pnl
+            "Raw_Delta_Risk": delta_risk,
+            "Raw_Delta_Reward": delta_reward
         })
         
     if not rows: return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values("Raw_Delta", ascending=False)
+    return pd.DataFrame(rows).sort_values(["Score", "Raw_Delta_Reward"], ascending=[False, False])
 
 # ==========================================
 # 3. STREAMLIT APP
@@ -956,7 +1140,24 @@ def advisor_rank_with_impact(holdings, price_df, vision, scenario, add_weight, s
 st.set_page_config(page_title="Portfolio Stress Lab", layout="wide", page_icon="📈")
 st.title("📈 Portfolio Stress Lab")
 
-# --- SIDEBAR ---
+# --- 1. SIDEBAR NAVIGATION (MOVED TO TOP) ---
+st.sidebar.header("Navigation")
+
+# Initialize State
+if "active_page" not in st.session_state:
+    st.session_state["active_page"] = "🔎 Inspection"
+
+# Render Menu at the VERY TOP of the sidebar
+page = st.sidebar.radio(
+    "Go to", 
+    ["🔎 Inspection", "📉 Stress Lab", "⚖️ Advisor & Actions", "🔬 Stock Screener"], 
+    key="active_page",
+    label_visibility="collapsed" # Clean look (hides the "Go to" label)
+)
+
+st.sidebar.markdown("---")
+
+# --- 2. SIDEBAR DATA IMPORT (APPEARS BELOW NAV) ---
 st.sidebar.header("📂 Data Import")
 input_method = st.sidebar.radio("Input Method:", ["Excel Upload", "Manual Entry (Qty)"])
 
@@ -968,10 +1169,8 @@ if input_method == "Manual Entry (Qty)" and "manual_holdings" in st.session_stat
     holdings = st.session_state["manual_holdings"]
 
 if input_method == "Excel Upload":
-    # Optional: Clear manual state to avoid confusion
-    if "manual_holdings" in st.session_state:
-        del st.session_state["manual_holdings"]
-        
+    if "manual_holdings" in st.session_state: del st.session_state["manual_holdings"]
+    
     uploaded_file = st.sidebar.file_uploader("Upload Portfolio (.xlsx)", type=["xlsx"])
     sheet_name = "Portfolio"
     
@@ -981,18 +1180,49 @@ if input_method == "Excel Upload":
             sheet_name = st.sidebar.selectbox("Select Sheet", xl.sheet_names)
             uploaded_file.seek(0)
             
-            col_map_expander = st.sidebar.expander("Column Mapping", expanded=False)
-            with col_map_expander:
+            with st.sidebar.expander("Column Mapping", expanded=False):
                 name_col = st.text_input("Name Column", "A")
                 ticker_col = st.text_input("Ticker Column", "B")
                 weight_col = st.text_input("Weight Column", "AQ")
+                value_col = st.text_input("Value Column (Optional)", "H")
+                yield_col = st.text_input("Yield Column (Optional)", "V")
             
-            holdings = load_portfolio(uploaded_file, sheet_name, name_col, weight_col, ticker_col)
-            # For Excel, we don't know the total $ value, so we clear any legacy value
-            if "portfolio_total_value" in st.session_state:
+            # NEW: Assumption Toggle
+            excel_curr = st.sidebar.radio("Excel Values are in:", ["EUR (€)", "USD ($)"], horizontal=True)
+            
+            # Modified call to accept value_col
+            holdings, calc_total = load_portfolio(uploaded_file, sheet_name, name_col, weight_col, ticker_col, value_col, yield_col)
+            
+            if calc_total:
+                # NORMALIZE TO USD FOR INTERNAL STORAGE
+                # The app uses USD as the base for the "portfolio_total_value" state variable.
+                final_total_usd = calc_total
+                
+                if "EUR" in excel_curr:
+                    # Fetch FX Rate to convert Input EUR -> Base USD
+                    try:
+                        fx_obj = yf.Ticker("EURUSD=X")
+                        rate = None
+                        if hasattr(fx_obj, "fast_info"):
+                            rate = getattr(fx_obj.fast_info, "last_price", None)
+                        if not rate: 
+                            rate = fx_obj.info.get("regularMarketPrice")
+                        
+                        # Fallback
+                        if not rate: rate = 1.08
+                        
+                        final_total_usd = calc_total * rate
+                    except:
+                        # Fallback if fetch fails
+                        final_total_usd = calc_total * 1.08
+                
+                st.session_state["portfolio_total_value"] = final_total_usd
+                
+            elif "portfolio_total_value" in st.session_state:
+                # Clear legacy value if we switched files and no value col found
                 del st.session_state["portfolio_total_value"]
-        except Exception as e:
-            st.sidebar.error(f"Error reading Excel: {e}")
+                
+        except Exception as e: st.sidebar.error(f"Error reading Excel: {e}")
 
 elif input_method == "Manual Entry (Qty)":
     st.sidebar.info("Enter your share counts. We'll fetch prices to calculate portfolio weights.")
@@ -1097,11 +1327,8 @@ if not holdings:
     st.info("👋 Please upload an Excel file OR use 'Manual Entry' to build your portfolio.")
     st.stop()
 
-# --- TABS (ALWAYS VISIBLE) ---
-tab_insp, tab_stress, tab_adv, tab_screen = st.tabs(["🔎 Inspection", "📉 Stress Lab", "⚖️ Advisor & Actions", "🔬 Stock Screener"])
-
-# --- TAB 1: INSPECTION ---
-with tab_insp:
+# --- INSPECTION ---
+if page == "🔎 Inspection":
     # 1. Prepare Data
     df_h = pd.DataFrame([h.__dict__ for h in holdings])
     df_h["kind"] = df_h["kind"].replace("TICKER", "EQUITY")
@@ -1136,55 +1363,68 @@ with tab_insp:
     if df_merged["Yield"].max() > 1.0: 
         df_merged["Yield"] = df_merged["Yield"] / 100.0
     
+    if "yield_val" in df_merged.columns:
+        # We override the 'Yield' column ONLY where:
+        # 1. We have a manual yield (yield_val is not NaN)
+        # 2. The position is CASH (This preserves live data for Equities)
+        mask_cash = (df_merged["kind"] == "CASH") & (df_merged["yield_val"].notna())
+        df_merged.loc[mask_cash, "Yield"] = df_merged.loc[mask_cash, "yield_val"]
+
     # --- CURRENCY TOGGLE & VALUE CALCULATION ---
     
     # 1. Fetch Live Exchange Rate (EUR/USD)
-    # EURUSD=X price is "How many USD for 1 EUR" (e.g. 1.05)
     fx_rate = 1.08 # Fallback default
     try:
         fx_obj = yf.Ticker("EURUSD=X")
         if hasattr(fx_obj, "fast_info"):
-            fetched = fx_obj.fast_info.last_price
-            if fetched: fx_rate = fetched
+            f = fx_obj.fast_info.last_price
+            if f: fx_rate = f
     except: pass
     
-    # 2. Controls
+    # 2. Controls Layout
     c_inv, c_curr = st.columns([2, 1])
     
     # Currency Toggle
-    curr_view = c_curr.radio("Currency View", ["USD ($)", "EUR (€)"], horizontal=True)
+    curr_view = c_curr.radio("View Currency", ["USD ($)", "EUR (€)"], horizontal=True)
     is_eur = "EUR" in curr_view
     
-    # 3. Determine Default Total Value
-    # We retrieve the USD value calculated in the Sidebar (or default to 10k)
-    base_val_usd = float(st.session_state.get("portfolio_total_value", 10000.0))
+    # 3. Determine Total Value
+    # Check if we have a hard-calculated value from data import
+    has_calculated_total = "portfolio_total_value" in st.session_state
+    base_val = float(st.session_state.get("portfolio_total_value", 10000.0))
     
-    # If viewing in EUR, convert the default USD value to EUR
-    # Logic: USD_Amount / Rate = EUR_Amount (e.g. $108 / 1.08 = €100)
-    default_input_val = base_val_usd / fx_rate if is_eur else base_val_usd
-    
-    # 4. Input Field (Allows user to override)
-    port_total_val = c_inv.number_input(
-        f"Total Portfolio Value ({'EUR' if is_eur else 'USD'})", 
-        value=default_input_val, 
-        step=1000.0,
-        format="%.2f"
-    )
-    
-    # 5. Calculate Column
-    df_merged["Value"] = df_merged["weight"] * port_total_val
+    # Apply FX conversion if viewing in EUR
+    display_val = base_val / fx_rate if is_eur else base_val
+    curr_sym = "€" if is_eur else "$"
 
-    # 2. Metrics
+    if has_calculated_total:
+        # READ-ONLY MODE: Data provided exact values
+        c_inv.metric(f"Total Portfolio Value ({'EUR' if is_eur else 'USD'})", f"{curr_sym}{display_val:,.2f}")
+        port_total_val = display_val
+    else:
+        # SIMULATION MODE: User sets the scale
+        port_total_val = c_inv.number_input(
+            f"Total Portfolio Value ({'EUR' if is_eur else 'USD'})", 
+            value=display_val, 
+            step=1000.0, 
+            format="%.2f",
+            help="Enter a total value to simulate dollar amounts for your percentage-based portfolio."
+        )
+    
+    # 4. Calculate Column
+    df_merged["Value"] = df_merged["weight"] * port_total_val
+    
+    # 5. Metrics
     port_yield = (df_merged["weight"] * df_merged["Yield"]).sum()
     equity_subset = df_merged[df_merged["kind"]=="EQUITY"]
     top_sec = equity_subset["Sector"].mode()[0] if not equity_subset.empty else "N/A"
     
     m1, m2, m3, m4 = st.columns([1,1,1,1])
     m1.metric("Total Holdings", len(df_h))
-    m2.metric("Est. Dividend Yield", f"{port_yield:.2%}")
+    m2.metric("Est. Total Yield", f"{port_yield:.2%}")
     m3.metric("Top Sector", top_sec)
 
-    # 3. Visuals
+    # 6. Visuals
     c_left, c_right = st.columns([1.4, 1])
     
     with c_left:
@@ -1226,7 +1466,7 @@ with tab_insp:
         else:
             st.info("Add Equities to see Sector Breakdown.")
 
-    # 4. Download Report Logic
+    # 7. Download Report Logic
     with m4:
         st.write("") 
         valid_cols = [c for c in display_cols if c in df_merged.columns]
@@ -1238,8 +1478,8 @@ with tab_insp:
         )
         st.download_button("📥 Download Report", insp_html, "Inspection_Report.html", "text/html")
 
-# --- TAB 2: STRESS LAB ---
-with tab_stress:
+# --- STRESS LAB ---
+if page == "📉 Stress Lab":
     # 1. Controls (Top Row) - Added 3rd column for Download Button
     c_btn, c_bm, c_dl = st.columns([1, 1.5, 1])
     
@@ -1370,8 +1610,8 @@ with tab_stress:
             if i+1 < len(scenario_figs):
                 cols[1].plotly_chart(scenario_figs[i+1], use_container_width=True)
 
-# --- TAB 3: ADVISOR & ACTIONS ---
-with tab_adv:
+# --- ADVISOR & ACTIONS ---
+if page == "⚖️ Advisor & Actions":
     st.header("⚖️ Portfolio Actions & Strategy")
     
     # ==========================================
@@ -1381,8 +1621,8 @@ with tab_adv:
     st.caption("Automated hygiene trades to keep risk limits and cash buffers in check.")
     
     c_set1, c_set2, c_set3 = st.columns(3)
-    c_buff = c_set1.slider("Min Cash Buffer", 0.0, 0.8, 0.15, help="Minimum % of portfolio to keep in Cash.")
-    m_w = c_set2.slider("Max Position Cap", 0.03, 0.5, 0.12, help="Maximum % allowed for any single Equity position.")
+    c_buff = c_set1.slider("Min Cash Buffer", 0.0, 0.8, 0.35, help="Minimum % of portfolio to keep in Cash.")
+    m_w = c_set2.slider("Max Position Cap", 0.03, 0.5, 0.05, help="Maximum % allowed for any single Equity position.")
     
     # NEW: Candidate Selector (Uses ALL options, Sorted Alphabetically)
     # This allows you to simulate adding ANY stock, regardless of your Advisor filters below.
@@ -1438,198 +1678,228 @@ with tab_adv:
         st.error(f"Rebalance Error: {e}")
 
     # ==========================================
-    # 2. STRATEGIC ADVISOR
+    # 2. STRATEGIC ADVISOR (With Sector Filter)
     # ==========================================
     st.subheader("2. Strategic Additions")
     st.caption("Ideas to hedge specific risks or tilt the portfolio (Impact analysis included).")
     
-    # Layout: 4 Columns for Filters
-    c_vis, c_scen, c_sec, c_add = st.columns([1, 1, 1.5, 0.8])
+    # 1. Filters Layout
+    c_vis, c_scen, c_sec = st.columns([1, 1, 1.5])
     
+    # Vision & Hedge
     vision = c_vis.selectbox("Vision", ["balanced", "income", "growth", "crisis-ready"])
     scen = c_scen.selectbox("Hedge Against", ["equity_crash", "stagflation", "rates_up"])
     
-    # NEW: Available Sectors
+    # Sector Filter (Dynamic)
     avail_sectors = sorted(list({c["sector"] for c in ADVISOR_PALETTE}))
-    sectors = c_sec.multiselect("Favorite Sector(s)", avail_sectors, placeholder="All Sectors")
+    sectors = c_sec.multiselect("Filter by Sector", avail_sectors, placeholder="All Sectors (Default)")
     
-    add_size = c_add.number_input("Add Size", 0.01, 0.10, 0.03)
-    
-    # Grab Price DF
-    px_ref = pd.DataFrame() 
+    # 2. Calculation
+    # Get price data if available for risk calc, otherwise empty
+    px_ref = pd.DataFrame()
     if "stress_results" in st.session_state and st.session_state["stress_results"]:
-            px_ref = st.session_state["stress_results"]["price_df"]
+        px_ref = st.session_state["stress_results"]["price_df"]
 
-    # Pass 'sectors' filter to the function
-    recs = advisor_rank_with_impact(holdings, px_ref, vision, scen, add_size, sectors)
+    # Run Logic
+    recs = advisor_rank_with_impact(holdings, px_ref, vision, scen, 0.03, sectors)
     
+    # --- Helper for Navigation Callback ---
+    def go_to_screener(ticker):
+        st.session_state["screener_ticker"] = ticker
+        st.session_state["active_page"] = "🔬 Stock Screener"
+        st.session_state["screener_back_button"] = True
+
+    # 3. Display Results
     if not recs.empty:
-        for i, row in recs.head(10).iterrows():
-            with st.expander(f"**{row['Ticker']}** - {row['Name']}"):
-                st.write(f"_{row['Why']}_")
-                st.markdown(f"**Projected Impact ({scen}):**")
-                st.code(row['Impact (Scenario)']) 
-                st.caption(f"Sector: {row['Sector']}")
-                if i < 3: st.caption("✨ *Top Pick*")
+        # A. Explainer
+        with st.expander("ℹ️ How to read this table", expanded=False):
+            st.markdown(f"""
+            * **Risk/Reward:** Compares the *added downside* in a **{scen}** scenario vs. the *added upside* in a **Bull Market**.
+            * **vs SMA200:** How far the current price is above/below the 200-Day Moving Average.
+            * **RSI:** <30 (Oversold/Buy), >70 (Overbought/Sell).
+            * **Score:** 0-100 Rating based on Value, Momentum, and Portfolio Fit.
+            """)
+
+        # B. Table (Overview)
+        display_cols = ["Score", "Ticker", "Name", "Sector", "Risk/Reward", "P/E", "RSI", "vs SMA200"]
+        
+        st.dataframe(
+            recs[display_cols].style.background_gradient(subset=["Score"], cmap="RdYlGn", vmin=0, vmax=100), 
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # C. Top Pick Highlight (With Deep Dive Button)
+        top_pick = recs.iloc[0]
+        st.success(f"💡 **Top Pick: {top_pick['Name']} ({top_pick['Ticker']})**")
+        
+        c_desc, c_act = st.columns([4, 1])
+        with c_desc:
+            st.markdown(f"""
+            * **Why:** {top_pick['Why']}
+            * **Trade-Off:** This trade adds **{top_pick['Raw_Delta_Risk']:.2%}** to your downside risk ({scen}), but adds **{top_pick['Raw_Delta_Reward']:.2%}** to your upside potential.
+            * **Technical:** Price is **{top_pick['vs SMA200']}** relative to trend.
+            """)
+        with c_act:
+            # DEEP DIVE BUTTON (Top Pick) - FIXED WITH CALLBACK
+            st.button(
+                f"🔍 Analyze\n{top_pick['Ticker']}", 
+                key=f"btn_top_{top_pick['Ticker']}",
+                on_click=go_to_screener,    # <--- Calls the helper
+                args=(top_pick['Ticker'],)  # <--- Passes the ticker
+            )
+
+        # D. Other Actionable Ideas
+        if len(recs) > 1:
+            st.markdown("---")
+            st.subheader("📋 More Opportunities")
+            for i, row in recs.iloc[1:6].iterrows(): # Show next 5
+                with st.expander(f"**{row['Ticker']}** - {row['Name']} (Score: {row['Score']})"):
+                    c_info, c_btn = st.columns([4, 1])
+                    with c_info:
+                        st.write(f"_{row['Why']}_")
+                        st.caption(f"Risk/Reward: {row['Risk/Reward']} | Sector: {row['Sector']}")
+                    with c_btn:
+                        # DEEP DIVE BUTTON (Others) - FIXED WITH CALLBACK
+                        st.button(
+                            f"🔍 Analyze", 
+                            key=f"btn_{row['Ticker']}",
+                            on_click=go_to_screener,   # <--- Calls the helper
+                            args=(row['Ticker'],)      # <--- Passes the ticker
+                        )
     else:
-        st.info("No matching suggestions found. Try broadening your 'Vision' or 'Sector' criteria.")
+        st.info("No matching suggestions found. Try broadening your criteria.")
 
-# --- TAB 4: STOCK SCREEENER ---
-with tab_screen:
-    st.header("🔬 Stock Screener")
-    st.caption("Deep dive: Fundamentals, Cash Flow, and Technical Indicators.")
+# --- SCREENER ---
+if page == "🔬 Stock Screener":
+
+    def go_back():
+        st.session_state["active_page"] = "⚖️ Advisor & Actions"
+        if "screener_back_button" in st.session_state:
+            del st.session_state["screener_back_button"]
     
-    # --- HELPER: Yahoo Search API (Fixed User-Agent) ---
-    def search_symbol_yahoo(query):
+    # 1. NAVIGATION HEADER (Back Button)
+    if st.session_state.get("screener_back_button"):
+        c_back, c_head = st.columns([1, 5])
+        with c_back:
+            # FIXED: Use callback to change page safely
+            st.button("⬅️ Return", on_click=go_back)
+        with c_head:
+            st.header("🔬 Screener")
+    else:
+        st.header("🔬 Screener")
+    
+    # Helper: Yahoo Search
+    def search_yahoo(q):
         try:
-            # Using a standard Browser User-Agent is crucial for Yahoo to respond
-            url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=10&newsCount=0"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            r = requests.get(url, headers=headers, timeout=5)
-            data = r.json()
-            if "quotes" in data and data["quotes"]:
-                return data["quotes"]
-        except Exception as e:
-            st.error(f"Search API Error: {e}")
-        return []
+            h = {'User-Agent': 'Mozilla/5.0'}
+            r = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={q}", headers=h)
+            return r.json().get("quotes", [])
+        except: return []
 
-    # 1. Search Interface
-    col_search, col_res = st.columns([1, 2])
-    search_query = col_search.text_input("Company or Ticker", value="BASF", help="Try 'BASF', 'Shell', or 'Apple'").strip()
+    # 2. Search Bar with Session State Logic
+    col_s, col_r = st.columns([1,2])
     
-    selected_ticker = None
-    
-    if search_query:
-        results = search_symbol_yahoo(search_query)
-        if results:
-            options = []
-            map_res = {}
-            for r in results:
-                # Filter to ensure we get valid symbols
-                sym = r.get('symbol')
-                name = r.get('shortname', r.get('longname', 'N/A'))
-                exch = r.get('exchDisp', r.get('exchange', 'N/A'))
-                
-                # Create a readable label
-                label = f"{sym} | {name} ({exch})"
-                options.append(label)
-                map_res[label] = sym
-            
-            sel_label = col_res.selectbox("Select Result:", options, index=0)
-            if sel_label:
-                selected_ticker = map_res[sel_label]
-        else:
-            col_res.warning(f"No results found for '{search_query}'. Try the exact ticker (e.g. BAS.DE).")
+    # CHECK FOR DEEP DIVE TARGET
+    default_q = "BASF"
+    if "screener_ticker" in st.session_state:
+        default_q = st.session_state["screener_ticker"]
+        del st.session_state["screener_ticker"] # Consume the state so it doesn't stick
 
+    q = col_s.text_input("Ticker/Name", value=default_q).strip()
+    
+    sel_tkr = None
+    if q:
+        res = search_yahoo(q)
+        if res:
+            opts = {f"{r['symbol']} | {r.get('shortname','')}": r['symbol'] for r in res}
+            # Auto-select the first result if it matches exactly, otherwise let user pick
+            idx = 0
+            s = col_r.selectbox("Result", list(opts.keys()), index=idx)
+            if s: sel_tkr = opts[s]
+    
     st.markdown("---")
 
-    # 2. Render Data
-    if selected_ticker:
+    # 3. Data Rendering
+    if sel_tkr:
         try:
-            tkr = yf.Ticker(selected_ticker)
-            info = tkr.info
+            t = yf.Ticker(sel_tkr)
+            i = t.info
+            h = t.history(period="1y")
             
-            # Fetch History
-            hist = tkr.history(period="2y")
-            
-            # Check for valid data
-            if ("symbol" in info or "longName" in info) and not hist.empty:
-                currency = info.get('currency', 'USD')
+            if not h.empty and ("symbol" in i or "longName" in i):
+                curr = i.get('currency','USD')
+                sec = i.get('sector', 'Unknown')
                 
-                # --- Header & Price ---
+                # Header
                 c1, c2 = st.columns([3, 1])
-                c1.subheader(f"{info.get('longName', selected_ticker)} ({selected_ticker})")
-                c1.caption(f"**Sector:** {info.get('sector', 'N/A')}  |  **Industry:** {info.get('industry', 'N/A')}")
+                c1.subheader(f"{i.get('longName', sel_tkr)}")
+                c1.caption(f"**{sec}** | {i.get('industry', '-')}")
                 
-                # Live Price Logic
-                curr_px = info.get('currentPrice', info.get('regularMarketPreviousClose', 0))
-                if not curr_px and not hist.empty:
-                    curr_px = hist["Close"].iloc[-1]
+                # Price
+                px = h['Close'].iloc[-1]
+                prev = i.get('regularMarketPreviousClose', px)
+                chg = (px - prev) / prev if prev else 0
+                c2.metric("Price", f"{px:,.2f} {curr}", f"{chg:+.2%}")
+
+                # --- METRICS WITH SECTOR COMPARISON ---
+                bench = SECTOR_BENCHMARKS.get(sec, {})
                 
-                prev_close = info.get('regularMarketPreviousClose', curr_px)
+                st.subheader("Fundamentals vs Industry")
+                k1, k2, k3, k4 = st.columns(4)
                 
-                if prev_close:
-                    delta = curr_px - prev_close
-                    delta_pct = delta / prev_close if prev_close else 0
-                    color = "green" if delta >= 0 else "red"
-                    c2.markdown(f"""
-                    <div style="text-align: right;">
-                        <span style="font-size: 28px; font-weight: bold;">{currency} {curr_px:,.2f}</span><br>
-                        <span style="color: {color}; font-size: 16px;">{delta:+.2f} ({delta_pct:+.2%})</span>
-                    </div>
-                    """, unsafe_allow_html=True)
+                # Market Cap
+                mcap = i.get('marketCap')
+                def fmt_b(n): return f"{n/1e9:.1f}B" if n and n>1e9 else "-"
+                k1.metric("Mkt Cap", fmt_b(mcap))
                 
-                st.markdown("### 📊 Key Metrics")
+                # P/E Ratio (Inverse Color: Lower is Green)
+                pe = i.get('trailingPE')
+                avg_pe = bench.get("PE")
+                pe_delta = f"{(pe - avg_pe):+.1f} vs Avg" if (pe and avg_pe) else None
+                k2.metric("P/E Ratio", f"{pe:.1f}x" if pe else "-", pe_delta, delta_color="inverse")
+
+                # Profit Margin (Normal Color: Higher is Green)
+                marg = i.get('profitMargins')
+                avg_marg = bench.get("Margin")
+                marg_delta = f"{(marg - avg_marg):+.1%} vs Avg" if (marg and avg_marg) else None
+                k3.metric("Profit Margin", f"{marg:.1%}" if marg else "-", marg_delta)
+
+                # ROE (Normal Color: Higher is Green)
+                roe = i.get('returnOnEquity')
+                avg_roe = bench.get("ROE")
+                roe_delta = f"{(roe - avg_roe):+.1%} vs Avg" if (roe and avg_roe) else None
+                k4.metric("ROE", f"{roe:.1%}" if roe else "-", roe_delta)
+
+                # --- TECHNICALS ---
+                st.subheader("Technicals")
+                h["SMA50"] = h["Close"].rolling(50).mean()
+                h["RSI"] = calculate_rsi(h["Close"])
                 
-                def fmt_num(n):
-                    if not n: return "-"
-                    if abs(n) >= 1e9: return f"{n/1e9:.2f}B"
-                    if abs(n) >= 1e6: return f"{n/1e6:.2f}M"
-                    return f"{n:,.0f}"
+                cur_rsi = h['RSI'].iloc[-1]
+                cur_sma = h['SMA50'].iloc[-1]
+                dist_sma = (px - cur_sma) / cur_sma if cur_sma else 0
+                
+                t1, t2, t3, t4 = st.columns(4)
+                
+                # RSI Color Logic
+                rsi_st = "Neutral"
+                if cur_rsi > 70: rsi_st = "Overbought"
+                elif cur_rsi < 30: rsi_st = "Oversold"
+                t1.metric("RSI (14)", f"{cur_rsi:.1f}", rsi_st, delta_color="off")
+                
+                t2.metric("vs SMA 50", f"{dist_sma:+.1%}", "Trend Strength")
+                t3.metric("Beta", f"{i.get('beta'):.2f}" if i.get('beta') else "-")
+                t4.metric("Div Yield", f"{i.get('dividendYield', 0):.2%}" if i.get('dividendYield') else "-")
 
-                # --- ROW 1: VALUATION ---
-                st.markdown("#### Valuation & Efficiency")
-                k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric("Market Cap", fmt_num(info.get('marketCap')))
-                k2.metric("Trailing P/E", f"{info.get('trailingPE', 0):.1f}x" if info.get('trailingPE') else "-")
-                k3.metric("Forward P/E", f"{info.get('forwardPE', 0):.1f}x" if info.get('forwardPE') else "-")
-                k4.metric("PEG Ratio", f"{info.get('pegRatio', 0):.2f}" if info.get('pegRatio') else "-")
-                k5.metric("Profit Margin", f"{info.get('profitMargins', 0):.1%}" if info.get('profitMargins') else "-")
-
-                # --- ROW 2: FINANCIAL HEALTH ---
-                st.markdown("#### Financial Health")
-                f1, f2, f3, f4, f5 = st.columns(5)
-                f1.metric("Op. Cash Flow", fmt_num(info.get('operatingCashflow')))
-                f2.metric("Free Cash Flow", fmt_num(info.get('freeCashflow')))
-                f3.metric("Total Debt", fmt_num(info.get('totalDebt')))
-                f4.metric("Debt/Equity", f"{info.get('debtToEquity', 0):.2f}" if info.get('debtToEquity') else "-")
-                f5.metric("ROE", f"{info.get('returnOnEquity', 0):.1%}" if info.get('returnOnEquity') else "-")
-
-                # --- ROW 3: TECHNICALS ---
-                st.markdown("#### Technical Indicators")
-                if not hist.empty:
-                    # RSI
-                    hist["RSI"] = calculate_rsi(hist["Close"], 14)
-                    cur_rsi = hist["RSI"].iloc[-1]
+                # Chart
+                st.line_chart(h["Close"])
+                
+                # Business Summary
+                with st.expander("🏢 Business Summary"):
+                    st.write(i.get('longBusinessSummary', 'No summary available.'))
                     
-                    # MA
-                    hist["SMA50"] = hist["Close"].rolling(50).mean()
-                    hist["SMA200"] = hist["Close"].rolling(200).mean()
-                    
-                    cur_sma50 = hist["SMA50"].iloc[-1]
-                    cur_sma200 = hist["SMA200"].iloc[-1]
-                    
-                    rsi_status = "Neutral"
-                    if cur_rsi > 70: rsi_status = "Overbought (High)"
-                    elif cur_rsi < 30: rsi_status = "Oversold (Low)"
-                    
-                    t1, t2, t3, t4 = st.columns(4)
-                    t1.metric("RSI (14)", f"{cur_rsi:.1f}", rsi_status)
-                    t2.metric("50-Day MA", f"{cur_sma50:,.2f}", f"{(curr_px - cur_sma50):.2f}")
-                    t3.metric("200-Day MA", f"{cur_sma200:,.2f}" if pd.notna(cur_sma200) else "N/A")
-                    t4.metric("Beta", f"{info.get('beta', 0):.2f}")
-                    
-                    # Chart
-                    display_hist = hist.tail(252).copy()
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=display_hist.index, y=display_hist["Close"], mode='lines', name='Price', line=dict(color='#636EFA', width=2), fill='tozeroy', fillcolor='rgba(99, 110, 250, 0.1)'))
-                    fig.add_trace(go.Scatter(x=display_hist.index, y=display_hist["SMA50"], mode='lines', name='50d MA', line=dict(color='#FFA15A', width=1.5)))
-                    if display_hist["SMA200"].notna().any():
-                        fig.add_trace(go.Scatter(x=display_hist.index, y=display_hist["SMA200"], mode='lines', name='200d MA', line=dict(color='#00CC96', width=1.5, dash='dash')))
-
-                    fig.update_layout(title=f"{selected_ticker} - 1 Year Trend", yaxis_title=currency, height=500, hovermode="x unified", margin=dict(l=0, r=0, t=40, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                    st.plotly_chart(fig, use_container_width=True)
-
-                # --- TABS ---
-                info_t1, info_t2 = st.tabs(["🏢 Business Summary", "🗣️ Analyst Recs"])
-                with info_t1: st.write(info.get('longBusinessSummary', 'No summary available.'))
-                with info_t2:
-                    recs = tkr.recommendations
-                    if recs is not None and not recs.empty: st.dataframe(recs.tail(10), use_container_width=True)
-                    else: st.info("No analyst data found.")
             else:
-                st.error("Could not fetch detailed data. Ticker might be delisted or invalid.")
+                st.error("Data unavailable or Ticker invalid.")
         except Exception as e:
             st.error(f"Error loading data: {e}")
