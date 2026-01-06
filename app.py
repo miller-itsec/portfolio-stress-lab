@@ -1345,16 +1345,23 @@ if page == "🔎 Inspection":
     for col in ["Sector", "Yield", "Country"]:
         if col not in df_merged.columns: df_merged[col] = np.nan
 
-    # Sector Cleaning
+    # --- FIX 1: STRICT SECTOR DEFINITIONS ---
     def clean_sector(row):
+        # If it's Cash or Alt, it has no "Business Sector" -> Return "-"
+        if row["kind"] in ["CASH", "ALT"]: return "-"
+        
+        # If it's Equity, try to find the real sector
         sec = row["Sector"] if pd.notna(row["Sector"]) else ""
         name = str(row["name"]).lower()
+        
         if sec and sec not in ["Unknown", "Other", ""]: return sec
-        if any(x in name for x in ["bond", "govt", "treasury", "fixed income", "gilt", "bund"]): return "Fixed Income"
+        
+        # Heuristics for missing data
+        if any(x in name for x in ["bond", "govt", "treasury", "fixed income"]): return "Fixed Income"
         if "reit" in name or "real estate" in name: return "Real Estate"
-        if "gold" in name or "silver" in name or "precious" in name: return "Commodities"
-        if row["kind"] == "EQUITY": return "Unclassified Equity"
-        return row["kind"]
+        if "gold" in name or "silver" in name: return "Commodities"
+        
+        return "Unclassified Equity"
 
     df_merged["Sector"] = df_merged.apply(clean_sector, axis=1)
     
@@ -1364,16 +1371,11 @@ if page == "🔎 Inspection":
         df_merged["Yield"] = df_merged["Yield"] / 100.0
     
     if "yield_val" in df_merged.columns:
-        # We override the 'Yield' column ONLY where:
-        # 1. We have a manual yield (yield_val is not NaN)
-        # 2. The position is CASH (This preserves live data for Equities)
         mask_cash = (df_merged["kind"] == "CASH") & (df_merged["yield_val"].notna())
         df_merged.loc[mask_cash, "Yield"] = df_merged.loc[mask_cash, "yield_val"]
 
-    # --- CURRENCY TOGGLE & VALUE CALCULATION ---
-    
-    # 1. Fetch Live Exchange Rate (EUR/USD)
-    fx_rate = 1.08 # Fallback default
+    # --- CURRENCY & VALUE ---
+    fx_rate = 1.08 
     try:
         fx_obj = yf.Ticker("EURUSD=X")
         if hasattr(fx_obj, "fast_info"):
@@ -1381,78 +1383,80 @@ if page == "🔎 Inspection":
             if f: fx_rate = f
     except: pass
     
-    # 2. Controls Layout
+    # Controls
     c_inv, c_curr = st.columns([2, 1])
-    
-    # Currency Toggle
     curr_view = c_curr.radio("View Currency", ["USD ($)", "EUR (€)"], horizontal=True)
     is_eur = "EUR" in curr_view
     
-    # 3. Determine Total Value
-    # Check if we have a hard-calculated value from data import
-    has_calculated_total = "portfolio_total_value" in st.session_state
     base_val = float(st.session_state.get("portfolio_total_value", 10000.0))
-    
-    # Apply FX conversion if viewing in EUR
     display_val = base_val / fx_rate if is_eur else base_val
     curr_sym = "€" if is_eur else "$"
 
-    if has_calculated_total:
-        # READ-ONLY MODE: Data provided exact values
-        c_inv.metric(f"Total Portfolio Value ({'EUR' if is_eur else 'USD'})", f"{curr_sym}{display_val:,.2f}")
+    if "portfolio_total_value" in st.session_state:
+        c_inv.metric(f"Total Value ({'EUR' if is_eur else 'USD'})", f"{curr_sym}{display_val:,.2f}")
         port_total_val = display_val
     else:
-        # SIMULATION MODE: User sets the scale
-        port_total_val = c_inv.number_input(
-            f"Total Portfolio Value ({'EUR' if is_eur else 'USD'})", 
-            value=display_val, 
-            step=1000.0, 
-            format="%.2f",
-            help="Enter a total value to simulate dollar amounts for your percentage-based portfolio."
-        )
+        port_total_val = c_inv.number_input(f"Total Value ({'EUR' if is_eur else 'USD'})", value=display_val, step=1000.0)
     
-    # 4. Calculate Column
     df_merged["Value"] = df_merged["weight"] * port_total_val
     
-    # 5. Metrics
+    # Metrics
     port_yield = (df_merged["weight"] * df_merged["Yield"]).sum()
     equity_subset = df_merged[df_merged["kind"]=="EQUITY"]
-    top_sec = equity_subset["Sector"].mode()[0] if not equity_subset.empty else "N/A"
+    top_sec = equity_subset["Sector"].mode()[0] if not equity_subset.empty else "-"
     
     m1, m2, m3, m4 = st.columns([1,1,1,1])
     m1.metric("Total Holdings", len(df_h))
     m2.metric("Est. Total Yield", f"{port_yield:.2%}")
     m3.metric("Top Sector", top_sec)
 
-    # 6. Visuals
+    # --- LAYOUT CONTAINERS ---
+    # We create the columns first, but we must populate the CHART (Right) 
+    # BEFORE determining the filter for the TABLE (Left).
     c_left, c_right = st.columns([1.4, 1])
     
-    with c_left:
-        st.subheader("Holdings Detail")
-        display_cols = ["name", "ticker", "weight", "Value", "Sector", "Yield"]
-        valid_cols = [c for c in display_cols if c in df_merged.columns]
-        
-        # Dynamic Formatting Symbol
-        curr_sym = "€" if is_eur else "$"
-        
-        st.dataframe(
-            df_merged[valid_cols].sort_values("weight", ascending=False)
-            .style.format({
-                "weight": "{:.2%}", 
-                "Yield": "{:.2%}",
-                "Value": curr_sym + "{:,.2f}" # Dynamic Currency Symbol
-            })
-            .background_gradient(subset=["weight"], cmap="Greens"),
-            height=600, use_container_width=True
-        )
+    selected_kind = None
 
+    # --- 1. RENDER CHART FIRST (To Capture Selection) ---
     with c_right:
         st.subheader("Allocation Analysis")
-        fig_pie = px.pie(df_merged, values="weight", names="kind", hole=0.4, 
-                         title="Asset Class Weights", color_discrete_sequence=px.colors.qualitative.Pastel)
-        st.plotly_chart(fig_pie, use_container_width=True)
         
-        fig_tree = None
+        # Pie Chart
+        fig_pie = px.pie(
+            df_merged, values="weight", names="kind", hole=0.4, 
+            title="Asset Class Weights (Click to Filter)", 
+            color_discrete_sequence=px.colors.qualitative.Pastel
+        )
+        fig_pie.update_traces(textinfo='percent+label')
+        
+        # Interactive Plotly Object
+        # Key is crucial for state persistence
+        event = st.plotly_chart(
+            fig_pie, 
+            on_select="rerun", 
+            selection_mode="points", 
+            use_container_width=True,
+            key="pie_chart_select" 
+        )
+
+        # Logic: Parse the selection event
+        if event and event.get("selection") and event["selection"]["points"]:
+            try:
+                # Plotly Pie events usually return the 'label' (e.g., 'CASH')
+                # If not, we fall back to pointNumber mapping
+                point = event["selection"]["points"][0]
+                if "label" in point:
+                    selected_kind = point["label"]
+                else:
+                    # Fallback: Map index to label
+                    idx = point["point_number"]
+                    # Groupby order matches Pie chart order usually, but 'names' kwarg maps to specific col
+                    # Safest is to rely on label, but if missing, we skip filtering to avoid errors
+                    pass 
+            except Exception as e:
+                st.warning(f"Selection error: {e}")
+        
+        # Tree Map (Secondary)
         if not equity_subset.empty:
             equity_subset = equity_subset.copy()
             equity_subset["ShortLabel"] = equity_subset["ticker"].fillna(equity_subset["name"])
@@ -1463,21 +1467,63 @@ if page == "🔎 Inspection":
                 hover_name="name", hover_data={"weight": ":.2%", "ShortLabel": False, "Sector": False}
             )
             st.plotly_chart(fig_tree, use_container_width=True)
-        else:
-            st.info("Add Equities to see Sector Breakdown.")
 
-    # 7. Download Report Logic
+    # --- 2. RENDER TABLE SECOND (With Filter Applied) ---
+    with c_left:
+        st.subheader("Holdings Detail")
+        
+        # Filter Logic
+        df_display = df_merged.copy()
+        
+        if selected_kind:
+            # Filter the dataframe
+            df_display = df_display[df_display["kind"] == selected_kind]
+            
+            # Show a "Clear Filter" message
+            c_msg, c_clear = st.columns([3, 1])
+            c_msg.info(f"🔎 Filtering by: **{selected_kind}**")
+            if c_clear.button("Show All"):
+                selected_kind = None
+                st.rerun() # Force reload to clear selection
+
+        display_cols = ["name", "ticker", "weight", "Value", "Sector", "Yield"]
+        valid_cols = [c for c in display_cols if c in df_display.columns]
+        
+        st.dataframe(
+            df_display[valid_cols].sort_values("weight", ascending=False)
+            .style.format({
+                "weight": "{:.2%}", 
+                "Yield": "{:.2%}",
+                "Value": curr_sym + "{:,.2f}"
+            })
+            .background_gradient(subset=["weight"], cmap="Greens"),
+            height=600, use_container_width=True
+        )
+
+    # --- 3. DOWNLOAD BUTTON (Bottom Right) ---
     with m4:
         st.write("") 
-        valid_cols = [c for c in display_cols if c in df_merged.columns]
         
-        insp_html = generate_inspection_report(
-            df_merged[valid_cols].sort_values("weight", ascending=False),
-            {"count": len(df_h), "yield": f"{port_yield:.2%}", "sector": top_sec},
-            fig_pie, fig_tree
+        # Prepare CSV
+        csv_df = df_display[valid_cols].copy()
+        # Rename for cleaner export
+        csv_df = csv_df.rename(columns={
+            "name": "Name", 
+            "ticker": "Ticker", 
+            "weight": "Weight", 
+            "Value": f"Value ({curr_sym})",
+            "Yield": "Yield"
+        })
+        
+        csv_data = csv_df.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Download Table (CSV)",
+            data=csv_data,
+            file_name="holdings_export.csv",
+            mime="text/csv"
         )
-        st.download_button("📥 Download Report", insp_html, "Inspection_Report.html", "text/html")
-
+	
 # --- STRESS LAB ---
 if page == "📉 Stress Lab":
     # 1. Controls (Top Row) - Added 3rd column for Download Button
